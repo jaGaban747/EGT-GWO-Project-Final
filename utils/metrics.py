@@ -35,6 +35,10 @@ def compute_metrics(solution, tasks, edge_nodes, ALPHA, GAMMA, BANDWIDTH):
     # QoS differentiation (mission-critical vs normal)
     qos_diff = np.mean(mission_critical_latency) - np.mean(normal_latency) if mission_critical_latency else 0
     
+    # Resource utilization fairness (Jain's index for CPU utilization)
+    utilization = node_loads / [n['cpu_cap'] for n in edge_nodes]
+    resource_fairness = (np.sum(utilization) ** 2) / (len(edge_nodes) * np.sum(utilization ** 2) + 1e-10)
+    
     return {
         'throughput': throughput,
         'latency': latency / len(tasks),
@@ -44,5 +48,6 @@ def compute_metrics(solution, tasks, edge_nodes, ALPHA, GAMMA, BANDWIDTH):
         'response_time': response_time,
         'offloading_ratio': offloading_ratio,
         'qos_differentiation': qos_diff,
-        'resource_utilization': np.mean(node_loads / [n['cpu_cap'] for n in edge_nodes])
+        'resource_utilization': np.mean(utilization),
+        'resource_fairness': resource_fairness
     }
