@@ -1,6 +1,7 @@
+from config import ALPHA, GAMMA, BANDWIDTH
 import numpy as np
 
-def compute_metrics(solution, tasks, edge_nodes, ALPHA, GAMMA, BANDWIDTH):
+def compute_metrics(solution, tasks, edge_nodes):
     latency = energy = overhead = 0
     node_loads = np.zeros(len(edge_nodes))
     mission_critical_latency = []
@@ -23,6 +24,8 @@ def compute_metrics(solution, tasks, edge_nodes, ALPHA, GAMMA, BANDWIDTH):
         energy += node['energy_cost'] * task['cpu']
         overhead += 1
         node_loads[node_idx] += task['cpu']
+
+    fitness = ALPHA * (latency / len(tasks)) + GAMMA * (energy / len(tasks))
         
     # Basic metrics
     throughput = len(tasks) / (latency + 1e-10)
@@ -40,6 +43,7 @@ def compute_metrics(solution, tasks, edge_nodes, ALPHA, GAMMA, BANDWIDTH):
     resource_fairness = (np.sum(utilization) ** 2) / (len(edge_nodes) * np.sum(utilization ** 2) + 1e-10)
     
     return {
+        'fitness': fitness,
         'throughput': throughput,
         'latency': latency / len(tasks),
         'energy': energy / len(tasks),
