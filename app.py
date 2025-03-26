@@ -1,10 +1,13 @@
 import os
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
+import seaborn as sns
 from scipy.stats import mannwhitneyu
 from algorithms import (
     HybridLDGWO, HybridRDGWO, HybridFPGWO, HybridBRDGWO,
-    HybridLDPSO, HybridLDGA, HybridLDACO
+    HybridLDPSO, HybridLDGA, HybridLDACO, HybridLDWOA, 
+    HybridLDSA, HybridLDCS, HybridLDABC, HybridLDDE
 )
 from utils.metrics import compute_metrics
 from config import *
@@ -46,7 +49,12 @@ game_theory_algorithms = {
 metaheuristic_algorithms = {
     'LD-PSO': HybridLDPSO(tasks, edge_nodes),
     'LD-GA': HybridLDGA(tasks, edge_nodes),
-    'LD-ACO': HybridLDACO(tasks, edge_nodes)
+    'LD-ACO': HybridLDACO(tasks, edge_nodes),
+    'LD-WOA': HybridLDWOA(tasks, edge_nodes),
+    'LD-SA': HybridLDSA(tasks, edge_nodes),
+    'LD-CS': HybridLDCS(tasks, edge_nodes),
+    'LD-ABC': HybridLDABC(tasks, edge_nodes),
+    'LD-DE': HybridLDDE(tasks, edge_nodes)
 }
 
 # =====================================
@@ -77,52 +85,80 @@ def run_experiments(algorithms, group_name):
 # =====================================
 def save_plot(figure, filename):
     try:
-        figure.savefig(os.path.join(results_dir, filename))
+        figure.savefig(os.path.join(results_dir, filename), bbox_inches='tight', dpi=300)
+        plt.close(figure)
     except Exception as e:
         print(f"Warning: Could not save {filename}: {str(e)}")
 
 def plot_group_results(results, group_name):
+    # Set Seaborn style
+    sns.set_style("whitegrid")
+    sns.set_palette("husl", len(results))
+    
     metrics = ['response_time', 'offloading_ratio', 
                'resource_fairness', 'qos_differentiation', 
                'resource_utilization']
     
-    fig, axs = plt.subplots(2, 3, figsize=(18, 10))
-    fig.suptitle(f'{group_name} Algorithms Performance', fontsize=16)
+    fig, axs = plt.subplots(2, 3, figsize=(24, 14))
+    fig.suptitle(f'{group_name} Performance Comparison', fontsize=18, y=1.02)
     
-    # Convergence Plot
-    axs[0,0].set_title('Convergence')
-    for name, data in results.items():
-        axs[0,0].plot(data['convergence'], label=name)
-    axs[0,0].legend()
-    axs[0,0].grid(True)
+    # Enhanced Convergence Plot
+    axs[0,0].set_title('Algorithm Convergence', fontsize=14, pad=10)
+    
+    # Order algorithms with LD-GWO first
+    algo_names = sorted(results.keys())
+    if 'LD-GWO' in algo_names:
+        algo_names.remove('LD-GWO')
+        algo_names.insert(0, 'LD-GWO')
+    
+    # Plot convergence with Seaborn's color palette
+    for i, name in enumerate(algo_names):
+        linewidth = 3 if name == 'LD-GWO' else 2
+        linestyle = '-' if name == 'LD-GWO' else '--'
+        axs[0,0].plot(results[name]['convergence'], 
+                     label=name,
+                     linewidth=linewidth,
+                     linestyle=linestyle)
+    
+    axs[0,0].legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=10)
+    axs[0,0].set_xlabel('Iterations', fontsize=12)
+    axs[0,0].set_ylabel('Fitness Value', fontsize=12)
     
     # Metric Plots
+    metric_titles = {
+        'response_time': 'Response Time (ms)',
+        'offloading_ratio': 'Offloading Ratio',
+        'resource_fairness': 'Resource Fairness',
+        'qos_differentiation': 'QoS Differentiation',
+        'resource_utilization': 'Resource Utilization'
+    }
+    
     for i, metric in enumerate(metrics):
         row = (i+1) // 3
         col = (i+1) % 3
         values = [r['metrics'][metric] for r in results.values()]
         
         if metric == 'qos_differentiation':
-            colors = ['red' if v > 0 else 'green' for v in values]
-            axs[row,col].bar(results.keys(), values, color=colors)
+            colors = ['#e63946' if v > 0 else '#2a9d8f' for v in values]
+            axs[row,col].bar(algo_names, values, color=colors)
         else:
-            axs[row,col].bar(results.keys(), values)
-            
-        axs[row,col].set_title(metric.replace('_', ' ').title())
-        axs[row,col].grid(True)
-        plt.setp(axs[row,col].xaxis.get_majorticklabels(), rotation=45)
+            data = {'Algorithm': algo_names, 'Value': values}
+            sns.barplot(data=data, x='Algorithm', y='Value', ax=axs[row,col], 
+                       hue='Algorithm', palette='Blues', legend=False)
+        
+        axs[row,col].set_title(metric_titles[metric], fontsize=14, pad=10)
+        axs[row,col].tick_params(axis='x', rotation=45)
     
     fig.delaxes(axs[1,2])
     plt.tight_layout()
     save_plot(fig, f'{group_name.lower()}_performance.png')
-    plt.show()
 
 def plot_ldgwo_comparison(ldgwo_result, mh_results):
     """Special comparison showing LD-GWO vs each metaheuristic"""
+    sns.set_style("whitegrid")
     metrics = ['latency', 'energy', 'resource_utilization']
-    fig = plt.figure(figsize=(15, 5))
+    fig = plt.figure(figsize=(18, 6))
     
-    # Prepare data - LD-GWO vs each metaheuristic
     comparisons = {
         'LD-GWO': ldgwo_result,
         **mh_results
@@ -133,7 +169,7 @@ def plot_ldgwo_comparison(ldgwo_result, mh_results):
         names = list(comparisons.keys())
         values = [r['metrics'][metric] for r in comparisons.values()]
         
-        # Calculate p-values (LD-GWO vs each)
+        # Calculate p-values
         p_values = []
         for mh_name, mh_result in mh_results.items():
             _, p = mannwhitneyu(
@@ -142,33 +178,32 @@ def plot_ldgwo_comparison(ldgwo_result, mh_results):
             )
             p_values.append(p)
         
-        # Plot with LD-GWO highlighted
-        colors = ['gold' if name == 'LD-GWO' else 'skyblue' for name in names]
-        bars = ax.bar(names, values, color=colors)
+        data = {'Algorithm': names, 'Value': values}
+        palette = ['gold' if name == 'LD-GWO' else 'skyblue' for name in names]
+        sns.barplot(data=data, x='Algorithm', y='Value', ax=ax,
+                   hue='Algorithm', palette=palette, legend=False)
         
-        # Annotate with p-values
+        # Annotate p-values
         for j, (name, p) in enumerate(zip(names[1:], p_values)):
             height = max(values[0], values[j+1]) * 1.05
             ax.text(j+1, height, f"p={p:.3f}", ha='center')
         
         ax.set_title(metric.replace('_', ' ').title())
         ax.set_ylabel(metric)
-        ax.grid(True)
-        plt.xticks(rotation=45)
+        ax.tick_params(axis='x', rotation=45)
     
     plt.suptitle("LD-GWO vs Metaheuristics Comparison", y=1.05)
     plt.tight_layout()
     save_plot(fig, 'ldgwo_vs_metaheuristics.png')
-    plt.show()
 
 def plot_cross_comparison(gt_res, mh_res):
+    sns.set_style("whitegrid")
     key_metrics = ['latency', 'energy', 'resource_utilization']
     
-    fig = plt.figure(figsize=(15, 5))
+    fig = plt.figure(figsize=(18, 6))
     for i, metric in enumerate(key_metrics, 1):
         ax = plt.subplot(1, 3, i)
         
-        # Use the smaller number of algorithms as reference
         num_comparisons = min(len(gt_res), len(mh_res))
         positions = np.arange(num_comparisons)
         width = 0.35
@@ -179,37 +214,35 @@ def plot_cross_comparison(gt_res, mh_res):
         stat, p = mannwhitneyu(gt_vals, mh_vals)
         sig = "***" if p < 0.001 else "**" if p < 0.01 else "*" if p < 0.05 else "ns"
         
-        ax.bar(positions - width/2, gt_vals, width, label='Game Theory')
-        ax.bar(positions + width/2, mh_vals, width, label='Metaheuristics')
+        data = pd.DataFrame({
+            'Group': ['Game Theory']*num_comparisons + ['Metaheuristics']*num_comparisons,
+            'Value': gt_vals + mh_vals,
+            'Position': np.concatenate([positions - width/2, positions + width/2])
+        })
+        
+        # Only create legend for the first subplot
+        sns.barplot(data=data, x='Position', y='Value', ax=ax, 
+                   hue='Group', palette=['skyblue', 'salmon'], 
+                   width=width, legend=i==1)
+        
+        # If legend was created (on first subplot), handle it
+        if i == 1:
+            ax.legend(title='Group', bbox_to_anchor=(1.05, 1), loc='upper left')
+        else:
+            # Remove legend for other subplots
+            ax.get_legend().remove() if ax.get_legend() is not None else None
         
         ax.set_title(f"{metric.replace('_', ' ').title()}\n(p={p:.3f} {sig})")
         ax.set_xticks(positions)
         ax.set_xticklabels(list(gt_res.keys())[:num_comparisons])
-        ax.grid(True)
     
-    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
     plt.tight_layout()
     save_plot(fig, 'cross_group_comparison.png')
-    plt.show()
 
 # =====================================
-# Main Execution
+# Statistical Analysis
 # =====================================
-if __name__ == "__main__":
-    # Run experiments
-    gt_results = run_experiments(game_theory_algorithms, "Game Theory")
-    mh_results = run_experiments(metaheuristic_algorithms, "Metaheuristics")
-    
-    # Extract LD-GWO specifically
-    ldgwo_result = gt_results['LD-GWO']
-    
-    # Generate plots
-    plot_group_results(gt_results, "Game Theory")
-    plot_group_results(mh_results, "Metaheuristics")
-    plot_ldgwo_comparison(ldgwo_result, mh_results)  # New focused comparison
-    plot_cross_comparison(gt_results, mh_results)
-    
-    # Statistical comparison
+def print_statistical_comparison(ldgwo_result, mh_results):
     print("\n=== LD-GWO vs Metaheuristics Detailed Comparison ===")
     for name, result in mh_results.items():
         print(f"\nComparison: LD-GWO vs {name}")
@@ -221,3 +254,22 @@ if __name__ == "__main__":
             effect = ldgwo_result['metrics'][metric] - result['metrics'][metric]
             print(f"{metric.title():<20} p = {p:.4f} ({'*' if p < 0.05 else 'ns'})")
             print(f"Effect size: {effect:.2f} ({'LD-GWO better' if effect < 0 else 'Other better'})")
+
+# =====================================
+# Main Execution
+# =====================================
+if __name__ == "__main__":
+    # Run experiments
+    gt_results = run_experiments(game_theory_algorithms, "Game Theory")
+    mh_results = run_experiments(metaheuristic_algorithms, "Metaheuristics")
+    
+    # Combine results
+    combined_results = {**gt_results, **mh_results}
+    
+    # Generate plots
+    plot_group_results(combined_results, "All Algorithms")
+    plot_ldgwo_comparison(gt_results['LD-GWO'], mh_results)
+    plot_cross_comparison(gt_results, mh_results)
+    
+    # Statistical comparison
+    print_statistical_comparison(gt_results['LD-GWO'], mh_results)

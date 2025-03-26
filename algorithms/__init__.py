@@ -1,23 +1,33 @@
 # Game Theory Hybrids
-from .hybrid_ld_gwo import HybridLDGWO      # Logit Dynamics + GWO
-from .hybrid_rd_gwo import HybridRDGWO      # Replicator Dynamics + GWO 
-from .hybrid_fp_gwo import HybridFPGWO      # Fictitious Play + GWO
-from .hybrid_brd_gwo import HybridBRDGWO    # Best Response Dynamics + GWO
+from .hybrid_ld_gwo import HybridLDGWO
+from .hybrid_rd_gwo import HybridRDGWO
+from .hybrid_fp_gwo import HybridFPGWO
+from .hybrid_brd_gwo import HybridBRDGWO
 
 # Metaheuristic Hybrids
-from .hybrid_ld_pso import HybridLDPSO      # Logit Dynamics + PSO
-from .hybrid_ld_ga import HybridLDGA        # Logit Dynamics + GA
-from .hybrid_ld_aco import HybridLDACO      # Logit Dynamics + ACO
+from .hybrid_ld_pso import HybridLDPSO
+from .hybrid_ld_ga import HybridLDGA
+from .hybrid_ld_aco import HybridLDACO
+from .hybrid_ld_sa import HybridLDSA
+from .hybrid_ld_de import HybridLDDE
+from .hybrid_ld_woa import HybridLDWOA
+from .hybrid_ld_cs import HybridLDCS
+from .hybrid_ld_abc import HybridLDABC
 
 __all__ = [
     # Game Theory
     'HybridLDGWO',
-    'HybridRDGWO', 
+    'HybridRDGWO',
     'HybridFPGWO',
     'HybridBRDGWO',
     
     # Metaheuristics
     'HybridLDPSO',
     'HybridLDGA',
-    'HybridLDACO'
+    'HybridLDACO',
+    'HybridLDSA',
+    'HybridLDDE',
+    'HybridLDWOA',
+    'HybridLDCS',
+    'HybridLDABC'
 ]
