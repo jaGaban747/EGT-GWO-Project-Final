@@ -23,6 +23,7 @@ MAX_ITER = 100
 ALPHA = 0.5  # Weight for latency
 GAMMA = 0.2  # Weight for energy
 BETA = 0.7   # Rationality parameter for Logit Dynamics
+DELTA = 0.1
 
 # Random seed for reproducibility
 RANDOM_SEED = 42

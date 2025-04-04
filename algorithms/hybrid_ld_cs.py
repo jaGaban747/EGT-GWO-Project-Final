@@ -1,4 +1,5 @@
 import numpy as np
+from scipy import special
 from .base_gt import BaseGameTheory
 from config import *
 
@@ -17,7 +18,8 @@ class HybridLDCS(BaseGameTheory):
 
     def _levy_flight(self, size):
         beta = self.lambda_
-        sigma = (np.math.gamma(1+beta)*np.sin(np.pi*beta/2)/(np.math.gamma((1+beta)/2)*beta*2**((beta-1)/2)))**(1/beta)
+        # Use scipy.special.gamma instead of np.math.gamma
+        sigma = (special.gamma(1+beta)*np.sin(np.pi*beta/2)/(special.gamma((1+beta)/2)*beta*2**((beta-1)/2)))**(1/beta)
         u = np.random.normal(0, sigma, size=size)
         v = np.random.normal(0, 1, size=size)
         return u/(np.abs(v)**(1/beta))
