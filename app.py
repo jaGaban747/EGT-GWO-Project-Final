@@ -7,28 +7,52 @@ from scipy.stats import wilcoxon, friedmanchisquare
 from statsmodels.stats.multitest import multipletests
 import os
 import sys
+import io  # For saving figures to BytesIO
+import plotly.graph_objects as go
+import plotly.express as px
+import plotly.figure_factory as ff
+from matplotlib.colors import LinearSegmentedColormap
+from matplotlib import cm
 
-# Add parent directory to path to import your modules
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add parent directory to the path so that modules can be imported correctly
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+# Import algorithms from your package
 from algorithms import (
-    HybridLDGWO, HybridRDGWO, HybridFPGWO, HybridBRDGWO,
-    HybridLDPSO, HybridLDGA, HybridLDACO, HybridLDWOA, 
-    HybridLDSA, HybridLDCS, HybridLDABC, HybridLDDE
+    HybridLDGWO,
+    HybridRDGWO,
+    HybridFPGWO,
+    HybridBRDGWO,
+    HybridNSGA2,
+    HybridQlearning,
+    HybridHEFT,
+    HybridMaxMin,
+    HybridLyapunov
 )
 from utils.metrics import compute_metrics
 from config import *
 
-# Page setup
+# Set up page configuration for Streamlit
 st.set_page_config(
-    page_title="Edge Computing Algorithm Comparison",
+    page_title="Edge Computing Algorithm Comparison Dashboard",
     page_icon="📊",
     layout="wide"
 )
 
-# Helper functions
+# -----------------------------------------------------------------------------
+# Helper Functions
+# -----------------------------------------------------------------------------
+
+# Define a better color palette
+def get_color_palette(num_colors):
+    """Generate a color palette with distinct colors."""
+    colormap = cm.get_cmap('tab10')
+    return [f"rgba({int(255*colormap(i)[0])}, {int(255*colormap(i)[1])}, {int(255*colormap(i)[2])}, 0.7)" 
+            for i in np.linspace(0, 0.9, num_colors)]
+
 @st.cache_data
 def generate_data(seed):
-    """Generate task and edge node data with specified seed"""
+    """Generate task and edge node data with a specified seed."""
     np.random.seed(seed)
     tasks = [{
         'cpu': np.random.randint(*TASK_CPU_RANGE),
@@ -43,84 +67,292 @@ def generate_data(seed):
         'loc': np.random.rand(2) * 100,
         'energy_cost': np.random.uniform(*EDGE_ENERGY_COST_RANGE)
     } for _ in range(NUM_EDGE_NODES)]
-    
+
     return tasks, edge_nodes
 
 def run_algorithm(algo_class, tasks, edge_nodes):
-    """Run a specific algorithm and return results"""
+    """
+    Run a specific algorithm and return its solution, convergence history,
+    computed metrics, and an indicator for whether it is a maximization method.
+    """
     try:
         algo = algo_class(tasks, edge_nodes)
         solution, convergence = algo.optimize()
         metrics = compute_metrics(solution, tasks, edge_nodes)
+        # Adjust the fitness metric based on latency and energy weights
+        metrics['fitness'] = ALPHA * metrics['latency'] + GAMMA * metrics['energy']
+        # List algorithms known to be using maximization (customize as needed)
+        maximizing_algos = ['HybridLDABC', 'HybridLDGA', 'MaxMin']
+        is_maximizing = algo_class.__name__ in maximizing_algos
+        
+        # Handle the case where an algorithm doesn't provide convergence data
+        if convergence is None or (isinstance(convergence, (list, tuple)) and len(convergence) == 0):
+            # For algorithms like Lyapunov that might not have convergence data
+            convergence = []
+            
         return {
             'solution': solution,
             'metrics': metrics,
-            'convergence': convergence
+            'convergence': convergence,
+            'is_maximizing': is_maximizing
         }
     except Exception as e:
         st.error(f"Error running {algo_class.__name__}: {str(e)}")
         return None
 
 def normalize_metrics(results):
-    """Normalize metrics across all algorithms for fair comparison"""
+    """
+    Normalize the collected metrics across all algorithms
+    so that comparisons are on the same scale.
+    """
     normalized_results = {}
-    
-    # Extract all metric values for normalization
     metric_values = {}
     for algo, metrics in results.items():
         for metric_name, values in metrics.items():
             if metric_name not in metric_values:
                 metric_values[metric_name] = []
             metric_values[metric_name].extend(values)
-    
-    # Calculate min and max for each metric
-    metric_ranges = {}
-    for metric_name, values in metric_values.items():
-        metric_ranges[metric_name] = {
-            'min': min(values),
-            'max': max(values)
-        }
-    
-    # Normalize metrics for each algorithm
+    metric_ranges = {m: {'min': min(v), 'max': max(v)} for m, v in metric_values.items()}
     for algo, metrics in results.items():
         normalized_results[algo] = {}
-        for metric_name, values in metrics.items():
-            min_val = metric_ranges[metric_name]['min']
-            max_val = metric_ranges[metric_name]['max']
-            
-            # Skip normalization if min equals max (all values are the same)
+        for m, values in metrics.items():
+            min_val = metric_ranges[m]['min']
+            max_val = metric_ranges[m]['max']
             if min_val == max_val:
-                normalized_results[algo][metric_name] = [1.0 for _ in values]
+                normalized_results[algo][m] = [1.0] * len(values)
             else:
-                # For metrics where lower is better (like latency, energy)
-                # We invert the normalization so higher values are better
-                normalized_results[algo][metric_name] = [
-                    1 - ((val - min_val) / (max_val - min_val)) 
-                    for val in values
+                # For metrics where lower is better (e.g., latency, energy),
+                # invert the normalization so higher normalized values are better.
+                normalized_results[algo][m] = [
+                    1 - ((val - min_val) / (max_val - min_val)) for val in values
                 ]
-    
     return normalized_results
 
-# Initialize session state
-if 'all_results' not in st.session_state:
-    st.session_state.all_results = {}
+def create_radar_chart(radar_data, categories):
+    """Create an interactive radar chart using Plotly."""
+    fig = go.Figure()
+    colors = get_color_palette(len(radar_data))
+    
+    for i, (algo, data) in enumerate(radar_data.items()):
+        values = [data.get(cat, 0) for cat in categories]
+        values.append(values[0])  # Close the loop
+        
+        fig.add_trace(go.Scatterpolar(
+            r=values,
+            theta=categories + [categories[0]],  # Close the loop
+            fill='toself',
+            name=algo,
+            line_color=colors[i],
+            fillcolor=colors[i].replace('0.7', '0.2')
+        ))
+    
+    fig.update_layout(
+        polar=dict(
+            radialaxis=dict(
+                visible=True,
+                range=[0, 1],
+                tickfont=dict(size=10),
+                tickvals=[0.2, 0.4, 0.6, 0.8],
+            ),
+            angularaxis=dict(
+                tickfont=dict(size=12, color='black'),
+            ),
+        ),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=-0.2,
+            xanchor="center",
+            x=0.5,
+            font=dict(size=12)
+        ),
+        margin=dict(l=80, r=80, t=50, b=50),
+        height=500,
+        width=700
+    )
+    return fig
 
-if 'normalized_results' not in st.session_state:
-    st.session_state.normalized_results = {}
+def create_better_boxplot(df, x_column, y_column, title, normalize=False):
+    """Create an enhanced box plot with Plotly."""
+    fig = px.box(
+        df, 
+        x=x_column, 
+        y=y_column, 
+        color=x_column,
+        color_discrete_sequence=get_color_palette(len(df[x_column].unique())),
+        title=title,
+        points="outliers"  # Only show outlier points
+    )
+    
+    fig.update_layout(
+        xaxis_title="",
+        yaxis_title=y_column,
+        legend_title_text='',
+        font=dict(size=12),
+        title={
+            'text': title,
+            'y': 0.95,
+            'x': 0.5,
+            'xanchor': 'center',
+            'yanchor': 'top'
+        },
+        margin=dict(l=50, r=20, t=80, b=50),
+        height=500
+    )
+    
+    # Rotate x-axis labels for better readability
+    fig.update_xaxes(tickangle=45)
+    
+    # Add a note about normalization if applicable
+    if normalize:
+        fig.add_annotation(
+            x=0.5, y=1.05,
+            xref="paper", yref="paper",
+            text="Normalized values (higher is better)",
+            showarrow=False,
+            font=dict(size=10, color="gray")
+        )
+    
+    return fig
 
-if 'all_convergence' not in st.session_state:
-    st.session_state.all_convergence = {}
+def create_better_bar_chart(data, x_values, y_values, title, normalize=False):
+    """Create an enhanced bar chart with Plotly."""
+    fig = px.bar(
+        data,
+        x=x_values,
+        y=y_values,
+        color=x_values,
+        color_discrete_sequence=get_color_palette(len(data)),
+        text=[f"{y:.3f}" for y in y_values],
+        title=title
+    )
+    
+    fig.update_layout(
+        xaxis_title="",
+        yaxis_title="Value",
+        legend_title_text='',
+        showlegend=False,
+        font=dict(size=12),
+        title={
+            'text': title,
+            'y': 0.95,
+            'x': 0.5,
+            'xanchor': 'center',
+            'yanchor': 'top'
+        },
+        margin=dict(l=50, r=20, t=80, b=50),
+        height=500
+    )
+    
+    # Rotate x-axis labels for better readability
+    fig.update_xaxes(tickangle=45)
+    
+    # Configure text display
+    fig.update_traces(textposition='outside')
+    
+    # Add a note about normalization if applicable
+    if normalize:
+        fig.add_annotation(
+            x=0.5, y=1.05,
+            xref="paper", yref="paper",
+            text="Normalized values (higher is better)",
+            showarrow=False,
+            font=dict(size=10, color="gray")
+        )
+    
+    return fig
+
+def create_plotly_convergence(convergence_data, algorithm_names, is_maximizing, title, single_plot=True):
+    """Create an interactive convergence plot using Plotly."""
+    fig = go.Figure()
+    colors = get_color_palette(len(algorithm_names))
+    
+    for i, (algo_name, convergence) in enumerate(zip(algorithm_names, convergence_data)):
+        if len(convergence) > 0:
+            fig.add_trace(go.Scatter(
+                x=list(range(1, len(convergence) + 1)),
+                y=convergence,
+                name=algo_name,
+                line=dict(color=colors[i], width=2),
+                mode='lines',
+                hovertemplate='Iteration: %{x}<br>Value: %{y:.4f}'
+            ))
+    
+    fig.update_layout(
+        title=title,
+        xaxis_title='Iteration',
+        yaxis_title='Fitness Value',
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=-0.2,
+            xanchor="center",
+            x=0.5
+        ),
+        margin=dict(l=60, r=20, t=60, b=60),
+        height=500,
+        hovermode='closest'
+    )
+    
+    # Add optimization direction annotation
+    if not single_plot:
+        direction = "Higher values are better" if is_maximizing else "Lower values are better"
+        fig.add_annotation(
+            x=0.5, y=1.05,
+            xref="paper", yref="paper",
+            text=direction,
+            showarrow=False,
+            font=dict(size=10, color="gray")
+        )
+    
+    return fig
+
+# -----------------------------------------------------------------------------
+# Session State Initialization
+# -----------------------------------------------------------------------------
+for key in ['all_results', 'normalized_results', 'all_convergence', 'algorithm_types']:
+    if key not in st.session_state:
+        st.session_state[key] = {}
 
 if 'selected_metrics' not in st.session_state:
     st.session_state.selected_metrics = ['latency', 'energy', 'resource_utilization']
 
-# Dashboard layout
+# Set custom page style
+st.markdown("""
+    <style>
+    .main .block-container {
+        padding-top: 2rem;
+    }
+    h1, h2, h3 {
+        color: #1E3A8A;
+    }
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        background-color: #f0f2f6;
+        border-radius: 4px 4px 0px 0px;
+        padding: 10px 16px;
+        font-weight: 500;
+    }
+    .stTabs [aria-selected="true"] {
+        background-color: #1E3A8A !important;
+        color: white !important;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# -----------------------------------------------------------------------------
+# Dashboard Layout
+# -----------------------------------------------------------------------------
 st.title("Edge Computing Algorithm Comparison Dashboard")
 
-# Sidebar options
+# -----------------------------------------------------------------------------
+# Sidebar Options
+# -----------------------------------------------------------------------------
 st.sidebar.header("Settings")
 
-# Algorithm selection
+# Algorithm Selection
 st.sidebar.subheader("Algorithms")
 algo_exp = st.sidebar.expander("Select Algorithms", expanded=True)
 algos = {
@@ -128,48 +360,45 @@ algos = {
     'RD-GWO': algo_exp.checkbox('RD-GWO', value=True),
     'FP-GWO': algo_exp.checkbox('FP-GWO', value=True),
     'BRD-GWO': algo_exp.checkbox('BRD-GWO', value=True),
-    'LD-PSO': algo_exp.checkbox('LD-PSO', value=True),
-    'LD-GA': algo_exp.checkbox('LD-GA', value=True),
-    'LD-ACO': algo_exp.checkbox('LD-ACO', value=True),
-    'LD-WOA': algo_exp.checkbox('LD-WOA', value=True),
-    'LD-SA': algo_exp.checkbox('LD-SA', value=True),
-    'LD-CS': algo_exp.checkbox('LD-CS', value=True),
-    'LD-ABC': algo_exp.checkbox('LD-ABC', value=True),
-    'LD-DE': algo_exp.checkbox('LD-DE', value=True)
+    'NSGA2': algo_exp.checkbox('NSGA2', value=True),
+    'Qlearning': algo_exp.checkbox('Qlearning', value=True),
+    'HEFT': algo_exp.checkbox('HEFT', value=True),
+    'MaxMin': algo_exp.checkbox('MaxMin', value=True),
+    'Lyapunov': algo_exp.checkbox('Lyapunov', value=True)
 }
 
-# Experiment settings
+# Indicate which algorithms are maximization-based (customize as needed)
+maximizing_algos = ['MaxMin']
+
 st.sidebar.subheader("Experiment Configuration")
-num_trials = st.sidebar.number_input("Number of Trials", 1, 50, 30)
+num_trials = st.sidebar.number_input("Number of Trials", min_value=1, max_value=50, value=30)
 selected_metrics = st.sidebar.multiselect(
     "Metrics for Statistical Tests",
     options=['fitness', 'latency', 'energy', 'resource_utilization'],
     default=['fitness']
 )
 
-# Visualization options
 st.sidebar.subheader("Visualization")
 show_convergence = st.sidebar.checkbox("Show convergence plots", value=True)
 show_metrics = st.sidebar.checkbox("Show performance metrics", value=True)
 use_normalized = st.sidebar.checkbox("Use normalized metrics", value=True)
 
-# Algorithm mapping
+# Map algorithm names to their classes
 algo_mapping = {
     'LD-GWO': HybridLDGWO,
     'RD-GWO': HybridRDGWO,
     'FP-GWO': HybridFPGWO,
     'BRD-GWO': HybridBRDGWO,
-    'LD-PSO': HybridLDPSO,
-    'LD-GA': HybridLDGA,
-    'LD-ACO': HybridLDACO,
-    'LD-WOA': HybridLDWOA,
-    'LD-SA': HybridLDSA,
-    'LD-CS': HybridLDCS,
-    'LD-ABC': HybridLDABC,
-    'LD-DE': HybridLDDE
+    'NSGA2': HybridNSGA2,
+    'Qlearning': HybridQlearning,
+    'HEFT': HybridHEFT,
+    'MaxMin': HybridMaxMin,
+    'Lyapunov': HybridLyapunov
 }
 
-# Run experiments
+# -----------------------------------------------------------------------------
+# Run Experiments
+# -----------------------------------------------------------------------------
 if st.sidebar.button("Run Experiments"):
     selected_algos = {name: algo_mapping[name] for name, selected in algos.items() if selected}
     if len(selected_algos) < 2:
@@ -178,6 +407,7 @@ if st.sidebar.button("Run Experiments"):
     
     all_results = {algo: {metric: [] for metric in selected_metrics} for algo in selected_algos}
     all_convergence = {algo: [] for algo in selected_algos}
+    algorithm_types = {algo: 'maximization' if algo in maximizing_algos else 'minimization' for algo in selected_algos}
     
     progress_bar = st.progress(0)
     status_text = st.empty()
@@ -190,389 +420,486 @@ if st.sidebar.button("Run Experiments"):
             result = run_algorithm(algo_class, tasks, edge_nodes)
             if result:
                 metrics = result['metrics']
-                metrics['fitness'] = ALPHA*metrics['latency'] + GAMMA*metrics['energy']
-                
-                # Store metrics
                 for metric in selected_metrics:
                     all_results[algo_name][metric].append(metrics[metric])
-                
-                # Store convergence history
                 all_convergence[algo_name].append(result['convergence'])
         
         progress_bar.progress((trial + 1) / num_trials)
     
-    # Normalize results for fair comparison
     normalized_results = normalize_metrics(all_results)
     
-    # Save results to session state
     st.session_state.all_results = all_results
     st.session_state.normalized_results = normalized_results
     st.session_state.all_convergence = all_convergence
+    st.session_state.algorithm_types = algorithm_types
     
     progress_bar.empty()
     status_text.text("Experiments completed!")
 
-# Display results
+# -----------------------------------------------------------------------------
+# Display Experiment Results
+# -----------------------------------------------------------------------------
 if st.session_state.all_results:
     st.success(f"Analysis complete! ({num_trials} trials)")
     
-    # Select which dataset to use (normalized or original)
+    # Choose dataset: normalized or original
     results_to_use = st.session_state.normalized_results if use_normalized else st.session_state.all_results
     
-    tabs = ["Performance Summary", "Convergence Analysis", "Statistical Tests"]
-    if show_metrics:
-        tabs.insert(2, "Detailed Metrics")
+    # Create tabs for visualizations and statistical tests
+    tabs = ["Performance Summary", "Convergence Analysis", "Detailed Metrics", "Statistical Tests"]
     tab1, tab2, tab3, tab4 = st.tabs(tabs)
     
-    # Performance Summary Tab
+    # --- Tab 1: Performance Summary ---
     with tab1:
         st.header("Performance Summary")
-        
-        # Note about normalization
         if use_normalized:
-            st.info("Metrics are normalized to [0-1] scale for fair comparison. Higher values indicate better performance.")
+            st.info("Using normalized metrics (values between 0 and 1; higher is better).")
         
-        # Calculate mean values
+        # Mean performance per algorithm
         mean_results = []
         for algo, metrics in results_to_use.items():
-            mean_vals = {f"Mean {k}": np.mean(v) for k, v in metrics.items()}
+            mean_vals = {f"Mean {m}": np.mean(v) for m, v in metrics.items()}
             mean_vals['Algorithm'] = algo
             mean_results.append(mean_vals)
-        
         perf_df = pd.DataFrame(mean_results)
         cols = ['Algorithm'] + [f"Mean {m}" for m in selected_metrics]
         
         if use_normalized:
-            # For normalized values, higher is better
-            st.dataframe(
-                perf_df[cols].style.highlight_max(axis=0, color='lightgreen'),
-                use_container_width=True
-            )
+            st.dataframe(perf_df[cols].style.highlight_max(axis=0, color='lightgreen'),
+                         use_container_width=True)
         else:
-            # For raw values, lower is better
-            st.dataframe(
-                perf_df[cols].style.highlight_min(axis=0, color='lightgreen'),
-                use_container_width=True
-            )
+            st.dataframe(perf_df[cols].style.highlight_min(axis=0, color='lightgreen'),
+                         use_container_width=True)
         
-        # Box plots
-        st.subheader("Distribution of Results")
+        # Box plot distribution
+        st.subheader("Metric Distributions")
         metric_to_show = st.selectbox("Select metric for distribution", selected_metrics)
-        
         plot_data = []
         for algo, metrics in results_to_use.items():
             for value in metrics[metric_to_show]:
-                plot_data.append({
-                    'Algorithm': algo,
-                    'Value': value,
-                    'Metric': metric_to_show
-                })
-        
+                plot_data.append({'Algorithm': algo, 'Value': value})
         df_plot = pd.DataFrame(plot_data)
-        fig, ax = plt.subplots(figsize=(12, 6))
-        sns.boxplot(data=df_plot, x='Algorithm', y='Value', ax=ax)
-        if use_normalized:
-            ax.set_title(f'Distribution of Normalized {metric_to_show.capitalize()} Values (higher is better)')
-            ax.set_ylim(0, 1)
-        else:
-            ax.set_title(f'Distribution of {metric_to_show.capitalize()} Values (lower is better)')
-        ax.set_xticklabels(ax.get_xticklabels(), rotation=45)
-        st.pyplot(fig)
+        
+        box_fig = create_better_boxplot(
+            df_plot, 
+            'Algorithm', 
+            'Value', 
+            f"Distribution of {metric_to_show.capitalize()} Values" + (" (Normalized)" if use_normalized else ""),
+            normalize=use_normalized
+        )
+        st.plotly_chart(box_fig, use_container_width=True)
     
-    # Convergence Analysis Tab
+    # --- Tab 2: Convergence Analysis ---
     with tab2:
         st.header("Convergence Analysis")
-        
         if show_convergence and st.session_state.all_convergence:
-            # Select specific trial to show or average
             trial_options = ["Average"] + [f"Trial {i+1}" for i in range(num_trials)]
             selected_trial = st.selectbox("Select trial for convergence plot", trial_options)
-            
-            fig, ax = plt.subplots(figsize=(12, 6))
-            
-            for algo_name, convergence_list in st.session_state.all_convergence.items():
-                if selected_trial == "Average":
-                    # Calculate average convergence across all trials
-                    # First, find the minimum length among all convergence histories
-                    min_length = min(len(conv) for conv in convergence_list)
-                    # Truncate all convergence histories to the minimum length
-                    truncated = [conv[:min_length] for conv in convergence_list]
-                    # Calculate average
-                    avg_convergence = np.mean(truncated, axis=0)
-                    
-                    # Plot average convergence
-                    ax.plot(range(1, len(avg_convergence) + 1), 
-                            avg_convergence, 
-                            label=f"{algo_name}")
-                else:
-                    # Plot specific trial
-                    trial_idx = int(selected_trial.split(" ")[1]) - 1
-                    if trial_idx < len(convergence_list):
-                        ax.plot(range(1, len(convergence_list[trial_idx]) + 1), 
-                                convergence_list[trial_idx], 
-                                label=f"{algo_name}")
-            
-            ax.set_xlabel('Iteration')
-            ax.set_ylabel('Fitness Value')
-            ax.set_title('Convergence Curves')
-            ax.legend()
-            ax.grid(True, linestyle='--', alpha=0.7)
-            st.pyplot(fig)
-            
-            # Add convergence statistics
-            st.subheader("Convergence Statistics")
-            
-            # Calculate iterations to reach various convergence thresholds
-            convergence_stats = []
-            for algo_name, convergence_list in st.session_state.all_convergence.items():
-                # Calculate statistics for each algorithm
-                stats = {}
-                stats['Algorithm'] = algo_name
-                
-                # Find iterations to reach 90%, 95%, and 99% of final fitness
-                iterations_to_90 = []
-                iterations_to_95 = []
-                iterations_to_99 = []
-                
-                for conv in convergence_list:
-                    final_value = conv[-1]
-                    
-                    # For 90% convergence
-                    threshold_90 = final_value * 1.1  # 10% more than final value
-                    iter_90 = next((i for i, v in enumerate(conv) if v <= threshold_90), len(conv))
-                    iterations_to_90.append(iter_90)
-                    
-                    # For 95% convergence
-                    threshold_95 = final_value * 1.05  # 5% more than final value
-                    iter_95 = next((i for i, v in enumerate(conv) if v <= threshold_95), len(conv))
-                    iterations_to_95.append(iter_95)
-                    
-                    # For 99% convergence
-                    threshold_99 = final_value * 1.01  # 1% more than final value
-                    iter_99 = next((i for i, v in enumerate(conv) if v <= threshold_99), len(conv))
-                    iterations_to_99.append(iter_99)
-                
-                stats['90% Convergence (iterations)'] = np.mean(iterations_to_90)
-                stats['95% Convergence (iterations)'] = np.mean(iterations_to_95)
-                stats['99% Convergence (iterations)'] = np.mean(iterations_to_99)
-                stats['Final Fitness (avg)'] = np.mean([conv[-1] for conv in convergence_list])
-                
-                convergence_stats.append(stats)
-            
-            # Display convergence statistics
-            st.dataframe(
-                pd.DataFrame(convergence_stats).style.highlight_min(
-                    ['90% Convergence (iterations)', '95% Convergence (iterations)', 
-                     '99% Convergence (iterations)', 'Final Fitness (avg)'],
-                    color='lightgreen'
-                ),
-                use_container_width=True
+            convergence_type = st.radio(
+                "Convergence direction",
+                ["Minimization (lower is better)", "Maximization (higher is better)", "Show both"],
+                horizontal=True
             )
-    
-    # Detailed Metrics Tab
-    if show_metrics:
-        with tab3:
-            st.header("Detailed Metrics Analysis")
             
-            # Allow user to choose metric
-            metric_choice = st.selectbox("Select metric to analyze", selected_metrics)
+            # Check which algorithms have valid convergence data
+            algos_with_convergence = []
+            missing_convergence = []
             
-            # Create radar chart for normalized metrics
-            st.subheader("Algorithm Performance Comparison (Radar Chart)")
-            
-            # Get mean values for each algorithm and metric
-            radar_data = {}
-            for algo, metrics in st.session_state.normalized_results.items():
-                radar_data[algo] = {}
-                for metric, values in metrics.items():
-                    radar_data[algo][metric] = np.mean(values)
-            
-            # Create radar chart
-            categories = selected_metrics
-            N = len(categories)
-            
-            # Create angles for each metric
-            angles = [n / float(N) * 2 * np.pi for n in range(N)]
-            angles += angles[:1]  # Close the loop
-            
-            # Create the plot
-            fig, ax = plt.subplots(figsize=(10, 10), subplot_kw=dict(polar=True))
-            
-            # Add grid lines and category labels
-            ax.set_theta_offset(np.pi / 2)
-            ax.set_theta_direction(-1)
-            plt.xticks(angles[:-1], categories)
-            
-            # Draw y-axis lines
-            ax.set_rlabel_position(0)
-            plt.yticks([0.2, 0.4, 0.6, 0.8], ["0.2", "0.4", "0.6", "0.8"], color="grey", size=8)
-            plt.ylim(0, 1)
-            
-            # Plot each algorithm
-            for algo, metrics in radar_data.items():
-                values = [metrics[cat] for cat in categories]
-                values += values[:1]  # Close the loop
-                ax.plot(angles, values, linewidth=2, linestyle='solid', label=algo)
-                ax.fill(angles, values, alpha=0.1)
-            
-            plt.legend(loc='upper right', bbox_to_anchor=(0.1, 0.1))
-            st.pyplot(fig)
-            
-            # Show detailed metrics for selected metric
-            st.subheader(f"Detailed {metric_choice.capitalize()} Analysis")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                # Bar chart for mean values
-                mean_vals = {algo: np.mean(metrics[metric_choice]) for algo, metrics in results_to_use.items()}
-                fig, ax = plt.subplots(figsize=(8, 6))
-                bars = ax.bar(mean_vals.keys(), mean_vals.values())
-                
-                # Add value labels on top of bars
-                for bar in bars:
-                    height = bar.get_height()
-                    ax.annotate(f'{height:.3f}',
-                                xy=(bar.get_x() + bar.get_width() / 2, height),
-                                xytext=(0, 3),  # 3 points vertical offset
-                                textcoords="offset points",
-                                ha='center', va='bottom',
-                                fontsize=8)
-                
-                if use_normalized:
-                    ax.set_title(f'Mean Normalized {metric_choice.capitalize()} (higher is better)')
-                    ax.set_ylim(0, 1)
+            for algo_name, convergence_list in st.session_state.all_convergence.items():
+                if convergence_list and any(isinstance(conv, (list, tuple, np.ndarray)) and len(conv) > 0 for conv in convergence_list):
+                    algos_with_convergence.append(algo_name)
                 else:
-                    ax.set_title(f'Mean {metric_choice.capitalize()} (lower is better)')
-                
-                ax.set_xticklabels(ax.get_xticklabels(), rotation=45)
-                st.pyplot(fig)
+                    missing_convergence.append(algo_name)
             
-            with col2:
-                # Violin plot for distribution
-                plot_data = []
-                for algo, metrics in results_to_use.items():
-                    for value in metrics[metric_choice]:
-                        plot_data.append({
-                            'Algorithm': algo,
-                            'Value': value
-                        })
+            if missing_convergence:
+                st.warning(f"The following algorithms don't have convergence data: {', '.join(missing_convergence)}")
                 
-                df_plot = pd.DataFrame(plot_data)
-                fig, ax = plt.subplots(figsize=(8, 6))
-                sns.violinplot(data=df_plot, x='Algorithm', y='Value', ax=ax)
+            if algos_with_convergence:
+                # Process convergence data based on selection
+                min_algos = []
+                min_data = []
+                max_algos = []
+                max_data = []
                 
-                if use_normalized:
-                    ax.set_title(f'Distribution of Normalized {metric_choice.capitalize()} (higher is better)')
-                    ax.set_ylim(0, 1)
-                else:
-                    ax.set_title(f'Distribution of {metric_choice.capitalize()} (lower is better)')
+                for algo_name in algos_with_convergence:
+                    convergence_list = st.session_state.all_convergence[algo_name]
+                    is_maximizing = algo_name in maximizing_algos
+                    
+                    # Skip algorithms that don't match the selected convergence type
+                    if convergence_type == "Minimization (lower is better)" and is_maximizing:
+                        continue
+                    if convergence_type == "Maximization (higher is better)" and not is_maximizing:
+                        continue
+                    
+                    if selected_trial == "Average":
+                        # Filter out empty convergence data
+                        valid_convergence = [conv for conv in convergence_list if isinstance(conv, (list, tuple, np.ndarray)) and len(conv) > 0]
+                        
+                        if valid_convergence:
+                            min_length = min(len(conv) for conv in valid_convergence)
+                            truncated = [conv[:min_length] for conv in valid_convergence]
+                            avg_convergence = np.mean(truncated, axis=0)
+                            
+                            if is_maximizing:
+                                max_algos.append(algo_name)
+                                max_data.append(avg_convergence)
+                            else:
+                                min_algos.append(algo_name)
+                                min_data.append(avg_convergence)
+                    else:
+                        trial_idx = int(selected_trial.split(" ")[1]) - 1
+                        if (trial_idx < len(convergence_list) and 
+                            isinstance(convergence_list[trial_idx], (list, tuple, np.ndarray)) and 
+                            len(convergence_list[trial_idx]) > 0):
+                            
+                            if is_maximizing:
+                                max_algos.append(algo_name)
+                                max_data.append(convergence_list[trial_idx])
+                            else:
+                                min_algos.append(algo_name)
+                                min_data.append(convergence_list[trial_idx])
                 
-                ax.set_xticklabels(ax.get_xticklabels(), rotation=45)
-                st.pyplot(fig)
+                # Create and display plots
+                if convergence_type in ["Minimization (lower is better)", "Show both"] and min_algos:
+                    min_fig = create_plotly_convergence(
+                        min_data, 
+                        min_algos, 
+                        False, 
+                        f"Convergence Curves (Minimization) - {selected_trial}",
+                        single_plot=(convergence_type != "Show both")
+                    )
+                    st.plotly_chart(min_fig, use_container_width=True)
+                
+                if convergence_type in ["Maximization (higher is better)", "Show both"] and max_algos:
+                    max_fig = create_plotly_convergence(
+                        max_data, 
+                        max_algos, 
+                        True, 
+                        f"Convergence Curves (Maximization) - {selected_trial}",
+                        single_plot=(convergence_type != "Show both")
+                    )
+                    st.plotly_chart(max_fig, use_container_width=True)
+                    
+                if ((convergence_type in ["Minimization (lower is better)"] and not min_algos) or
+                    (convergence_type in ["Maximization (higher is better)"] and not max_algos)):
+                    st.warning(f"No algorithms with {convergence_type.split(' ')[0].lower()} convergence data to display.")
+            else:
+                st.error("No algorithms with valid convergence data to display.")
     
-    # Statistical Tests Tab
+    # --- Tab 3: Detailed Metrics ---
+    with tab3:
+        st.header("Detailed Metrics Analysis")
+        metric_choice = st.selectbox("Select metric to analyze", selected_metrics)
+        
+        # Radar Chart
+        st.subheader("Radar Chart Comparison")
+        radar_data = {}
+        for algo, metrics in st.session_state.normalized_results.items():
+            radar_data[algo] = {m: np.mean(metrics[m]) for m in selected_metrics}
+        
+        categories = selected_metrics
+        radar_fig = create_radar_chart(radar_data, categories)
+        st.plotly_chart(radar_fig, use_container_width=True)
+        
+        # Detailed analysis by metric
+        st.subheader(f"Detailed {metric_choice.capitalize()} Analysis")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            mean_vals = {algo: np.mean(results_to_use[algo][metric_choice]) for algo in results_to_use}
+            bar_fig = create_better_bar_chart(
+                list(mean_vals.keys()),
+                list(mean_vals.keys()),
+                list(mean_vals.values()),
+                f"Mean {metric_choice.capitalize()}" + (" (Normalized)" if use_normalized else ""),
+                normalize=use_normalized
+            )
+            st.plotly_chart(bar_fig)
+            
+        with col2:
+            plot_data = []
+            for algo, metrics in results_to_use.items():
+                for value in metrics[metric_choice]:
+                    plot_data.append({'Algorithm': algo, 'Value': value})
+            df_plot = pd.DataFrame(plot_data)
+            
+            violin_fig = px.violin(
+                df_plot,
+                x="Algorithm", 
+                y="Value",
+                color="Algorithm",
+                box=True,
+                color_discrete_sequence=get_color_palette(len(df_plot["Algorithm"].unique())),
+                title=f"Distribution of {metric_choice.capitalize()}" + (" (Normalized)" if use_normalized else "")
+            )
+            violin_fig.update_layout(
+                xaxis_title="",
+                legend_title_text='',
+                xaxis_tickangle=45,
+                height=500,
+                showlegend=False
+            )
+            
+            if use_normalized:
+                violin_fig.add_annotation(
+                    x=0.5, y=1.05,
+                    xref="paper", yref="paper",
+                    text="Normalized values (higher is better)",
+                    showarrow=False,
+                    font=dict(size=10, color="gray")
+                )
+                
+            st.plotly_chart(violin_fig)
+    
+    # --- Tab 4: Statistical Tests ---
     with tab4:
         st.header("Statistical Analysis")
-        
-        if use_normalized:
-            st.info("Statistical tests are being performed on normalized metrics for fair comparison.")
-        
+        st.info("Statistical tests are performed on raw (un-normalized) metrics for fairness.")
         selected_test_metric = st.selectbox("Select metric for statistical tests", selected_metrics)
         
         # Prepare data for tests
-        algorithms = list(results_to_use.keys())
-        data_matrix = np.array([results_to_use[algo][selected_test_metric] 
-                              for algo in algorithms]).T
-        
-        # Friedman Test
-        st.subheader("Friedman Test")
-        friedman_stat, friedman_p = friedmanchisquare(*data_matrix.T)
-        st.write(f"Friedman chi-square statistic: {friedman_stat:.3f}")
-        st.write(f"p-value: {friedman_p:.5f}")
-        if friedman_p < 0.05:
-            st.success("Significant differences detected (p < 0.05)")
+        algo_values = {}
+        for algo, metrics in st.session_state.all_results.items():
+            if selected_test_metric in metrics:
+                algo_values[algo] = metrics[selected_test_metric]
+                
+        # Friedman test
+        if len(algo_values) >= 3:
+            algos_list = list(algo_values.keys())
+            values_list = [algo_values[algo] for algo in algos_list]
+            try:
+                friedman_stat, friedman_p = friedmanchisquare(*values_list)
+                
+                st.subheader("Friedman Test")
+                col1, col2 = st.columns(2)
+                with col1:
+                    friedman_fig = go.Figure(go.Indicator(
+                        mode="gauge+number",
+                        value=1 - friedman_p,  # Invert p-value for visual purposes
+                        title={'text': "Confidence Level", 'font': {'size': 24}},
+                        number={'suffix': "%", 'font': {'size': 26}, 'valueformat': '.2f'},
+                        gauge={
+                            'axis': {'range': [0, 1], 'tickvals': [0, 0.05, 0.5, 0.95, 1], 
+                                    'ticktext': ['0%', '5%', '50%', '95%', '100%']},
+                            'bar': {'color': "green" if friedman_p < 0.05 else "gray"},
+                            'steps': [
+                                {'range': [0, 0.05], 'color': "lightgray"},
+                                {'range': [0.05, 0.95], 'color': "lightblue"},
+                                {'range': [0.95, 1], 'color': "royalblue"}
+                            ],
+                            'threshold': {
+                                'line': {'color': "red", 'width': 4},
+                                'thickness': 0.75,
+                                'value': 0.95
+                            }
+                        }
+                    ))
+                    
+                    friedman_fig.update_layout(
+                        height=300,
+                        margin=dict(l=20, r=20, t=30, b=20),
+                    )
+                    st.plotly_chart(friedman_fig)
+                
+                with col2:
+                    st.markdown(f"""
+                    ### Friedman Test Results
+                    
+                    **Chi-Square Value:** {friedman_stat:.3f}
+                    
+                    **p-value:** {friedman_p:.5f}
+                    
+                    **Conclusion:** {"Significant differences detected between algorithms (p < 0.05)" if friedman_p < 0.05 else "No significant differences detected between algorithms (p ≥ 0.05)"}
+                    """)
+            except Exception as e:
+                st.error(f"Error performing Friedman test: {e}")
         else:
-            st.warning("No significant differences detected (p >= 0.05)")
+            st.warning("Friedman test requires at least 3 algorithms.")
         
-        # Wilcoxon Pairwise Tests with Holm correction
-        if friedman_p < 0.05:
-            st.subheader("Post-hoc Pairwise Comparisons (Wilcoxon signed-rank test)")
-            
-            # Generate all possible pairs
-            pairs = [(i, j) for i in range(len(algorithms)) 
-                    for j in range(i+1, len(algorithms))]
-            
+        # Pairwise Wilcoxon tests
+        st.subheader("Pairwise Wilcoxon Tests")
+        if len(algo_values) >= 2:
+            algo_pairs = [(a1, a2) for idx, a1 in enumerate(algo_values.keys()) 
+                          for a2 in list(algo_values.keys())[idx+1:]]
             results = []
             p_values = []
-            for i, j in pairs:
-                stat, p = wilcoxon(data_matrix[:, i], data_matrix[:, j])
-                results.append({
-                    'Algorithm 1': algorithms[i],
-                    'Algorithm 2': algorithms[j],
-                    'Statistic': stat,
-                    'p-value': p
-                })
-                p_values.append(p)
+            for a1, a2 in algo_pairs:
+                try:
+                    stat, p = wilcoxon(algo_values[a1], algo_values[a2])
+                    results.append({
+                        'Algorithm 1': a1,
+                        'Algorithm 2': a2,
+                        'Statistic': stat,
+                        'p-value': p
+                    })
+                    p_values.append(p)
+                except Exception as e:
+                    st.error(f"Error performing Wilcoxon test between {a1} and {a2}: {e}")
             
-            # Apply Holm-Bonferroni correction
-            reject, p_adjusted, _, _ = multipletests(p_values, method='holm')
-            
-            # Add adjusted p-values to results
-            for idx, res in enumerate(results):
-                res['Adjusted p-value'] = p_adjusted[idx]
-                res['Significant'] = reject[idx]
-            
-            results_df = pd.DataFrame(results)
-            
-            # Formatting
-            def highlight_significant(row):
-                color = 'lightgreen' if row['Significant'] else 'white'
-                return ['background-color: {}'.format(color)] * len(row)
-            
-            st.dataframe(
-                results_df.style.apply(highlight_significant, axis=1)
-                .format({'p-value': '{:.5f}', 'Adjusted p-value': '{:.5f}'}),
-                use_container_width=True
-            )
-            
-            # Create ranking visualization
-            if len(algorithms) > 2:
-                st.subheader("Algorithm Ranking")
+            # Adjust p-values for multiple comparisons
+            if p_values:
+                reject, pvals_corrected, _, _ = multipletests(p_values, alpha=0.05, method='bonferroni')
                 
-                # Calculate the number of wins for each algorithm
-                wins = {algo: 0 for algo in algorithms}
+                # Update results with corrected p-values
+                for i, result in enumerate(results):
+                    results[i]['Corrected p-value'] = pvals_corrected[i]
+                    results[i]['Significant'] = reject[i]
+                
+                # Create a DataFrame for display
+                results_df = pd.DataFrame(results)
+                
+                # Apply conditional formatting
+                styled_df = results_df.style.apply(
+                    lambda row: ['background-color: lightgreen' if row['Significant'] else 'background-color: white' 
+                                for _ in row], axis=1
+                )
+                
+                st.dataframe(styled_df, use_container_width=True)
+                
+                # Create a heatmap for p-values
+                st.subheader("P-value Heatmap")
+                
+                # Prepare matrix data for heatmap
+                algos = list(algo_values.keys())
+                p_matrix = pd.DataFrame(index=algos, columns=algos)
+                
+                # Fill diagonal with 1.0 (same algorithm)
+                for algo in algos:
+                    p_matrix.loc[algo, algo] = 1.0
+                
+                # Fill with computed p-values
                 for result in results:
-                    if result['Significant']:
-                        algo1_mean = np.mean(results_to_use[result['Algorithm 1']][selected_test_metric])
-                        algo2_mean = np.mean(results_to_use[result['Algorithm 2']][selected_test_metric])
-                        
-                        if use_normalized:
-                            # For normalized results, higher is better
-                            winner = result['Algorithm 1'] if algo1_mean > algo2_mean else result['Algorithm 2']
-                        else:
-                            # For raw results, lower is better
-                            winner = result['Algorithm 1'] if algo1_mean < algo2_mean else result['Algorithm 2']
-                        
-                        wins[winner] += 1
+                    a1, a2 = result['Algorithm 1'], result['Algorithm 2']
+                    p_matrix.loc[a1, a2] = result['Corrected p-value']
+                    p_matrix.loc[a2, a1] = result['Corrected p-value']  # Mirror value
                 
-                # Create ranking bar chart
-                fig, ax = plt.subplots(figsize=(10, 6))
-                bars = ax.bar(wins.keys(), wins.values())
+                # Create heatmap
+                fig = ff.create_annotated_heatmap(
+                    z=p_matrix.values.tolist(),
+                    x=p_matrix.columns.tolist(),
+                    y=p_matrix.index.tolist(),
+                    annotation_text=[[f"{val:.3f}" if val is not None else "" for val in row] 
+                                     for row in p_matrix.values],
+                    colorscale='YlGnBu_r',
+                    showscale=True
+                )
                 
-                # Add value labels on top of bars
-                for bar in bars:
-                    height = bar.get_height()
-                    ax.annotate(f'{height}',
-                                xy=(bar.get_x() + bar.get_width() / 2, height),
-                                xytext=(0, 3),  # 3 points vertical offset
-                                textcoords="offset points",
-                                ha='center', va='bottom')
+                fig.update_layout(
+                    title="Corrected P-values (Lower values indicate stronger evidence of difference)",
+                    height=500,
+                    margin=dict(l=50, r=20, t=80, b=50),
+                )
                 
-                ax.set_title(f'Number of Significant Wins for {selected_test_metric.capitalize()}')
-                ax.set_ylabel('Number of Wins')
-                ax.set_xticklabels(ax.get_xticklabels(), rotation=45)
-                st.pyplot(fig)
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Add interpretation of results
+                significant_pairs = [(r['Algorithm 1'], r['Algorithm 2']) for r in results if r['Significant']]
+                if significant_pairs:
+                    st.markdown(f"""
+                    ### Significant Differences Detected
+                    
+                    The following algorithm pairs show statistically significant differences in {selected_test_metric}:
+                    """)
+                    for a1, a2 in significant_pairs:
+                        mean1 = np.mean(algo_values[a1])
+                        mean2 = np.mean(algo_values[a2])
+                        better = a1 if mean1 < mean2 else a2
+                        if selected_test_metric in ['fitness', 'latency', 'energy']:  # Lower is better
+                            st.markdown(f"- **{a1}** vs **{a2}**: {better} performs better")
+                        else:  # Higher is better
+                            better = a1 if mean1 > mean2 else a2
+                            st.markdown(f"- **{a1}** vs **{a2}**: {better} performs better")
+                else:
+                    st.info("No statistically significant differences were found between any algorithm pairs after correction for multiple comparisons.")
+            else:
+                st.warning("No valid test results to display.")
+        else:
+            st.warning("Pairwise tests require at least 2 algorithms.")
 
-else:
-    st.info("Select algorithms and configuration in the sidebar, then click 'Run Experiments'")
+# -----------------------------------------------------------------------------
+# Conclusions Section
+# -----------------------------------------------------------------------------
+if st.session_state.all_results:
+    st.header("Conclusions and Recommendations")
+    
+    # Calculate average ranks
+    ranks = {}
+    
+    for metric in selected_metrics:
+        metric_ranks = {}
+        for algo in st.session_state.all_results:
+            # Get mean values for each metric (use non-normalized for fairness)
+            mean_val = np.mean(st.session_state.all_results[algo][metric])
+            metric_ranks[algo] = mean_val
+        
+        # Sort algorithms based on the metric (lower is better for most metrics)
+        sorted_algos = sorted(metric_ranks.items(), key=lambda x: x[1])
+        
+        # Assign ranks
+        for rank, (algo, _) in enumerate(sorted_algos):
+            if algo not in ranks:
+                ranks[algo] = {}
+            ranks[algo][metric] = rank + 1  # +1 because ranks start at 1, not 0
+    
+    # Calculate average rank across metrics
+    avg_ranks = {}
+    for algo, metric_ranks in ranks.items():
+        avg_ranks[algo] = sum(metric_ranks.values()) / len(metric_ranks)
+    
+    # Sort algorithms by average rank
+    sorted_avg_ranks = sorted(avg_ranks.items(), key=lambda x: x[1])
+    
+    # Display ranking as a horizontal bar chart
+    st.subheader("Algorithm Rankings")
+    
+    fig = px.bar(
+        x=[rank for _, rank in sorted_avg_ranks],
+        y=[algo for algo, _ in sorted_avg_ranks],
+        orientation='h',
+        color=[algo for algo, _ in sorted_avg_ranks],
+        color_discrete_sequence=get_color_palette(len(sorted_avg_ranks)),
+        labels={"x": "Average Rank (Lower is Better)", "y": "Algorithm"},
+        title="Overall Algorithm Performance Ranking"
+    )
+    
+    fig.update_layout(
+        showlegend=False,
+        height=400,
+        margin=dict(l=50, r=20, t=80, b=50),
+        yaxis={'categoryorder': 'total ascending'}
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # Generate recommendations
+    best_algo = sorted_avg_ranks[0][0]
+    worst_algo = sorted_avg_ranks[-1][0]
+    
+    st.markdown(f"""
+    ### Key Findings
+    
+    Based on the experiments across {num_trials} trials:
+    
+    1. **{best_algo}** achieves the best overall performance ranking.
+    
+    2. The performance gap between **{best_algo}** and **{worst_algo}** is substantial.
+    
+    3. For latency-critical applications, **{sorted(ranks.items(), key=lambda x: x[1].get('latency', float('inf')))[0][0]}** 
+       shows the best performance.
+    
+    4. For energy efficiency, **{sorted(ranks.items(), key=lambda x: x[1].get('energy', float('inf')))[0][0]}** 
+       is the recommended choice.
+    
+    5. Statistical analysis {"supports" if len([r for r in results if r['Significant']]) > 0 else "does not strongly support"} 
+       the conclusion that there are significant differences between the algorithms.
+    """)
+
+# -----------------------------------------------------------------------------
+# Footer
+# -----------------------------------------------------------------------------
+st.markdown("---")
+st.markdown("""
+    <div style="text-align: center;">
+        <p>Edge Computing Algorithm Comparison Dashboard • Created with Streamlit</p>
+    </div>
+""", unsafe_allow_html=True)
