@@ -75,6 +75,11 @@ GAMMA = 0.2
 # Rationality parameter for Logit Dynamics (LD-GWO)
 BETA = 0.7
 
+# Q-learning parameters
+EPSILON = 0.9          # Initial exploration rate
+LEARNING_RATE = 0.1    # Alpha - learning rate
+DISCOUNT_FACTOR = 0.9  # Gamma - discount factor
+
 # Strategy adjustment factor (used in stochastic updates or decay)
 DELTA = 0.1
 

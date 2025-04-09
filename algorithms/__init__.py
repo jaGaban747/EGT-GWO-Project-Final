@@ -31,9 +31,8 @@ __all__ = [
     'HybridGA',
 
     # Reinforcement Learning
-    'HybridDDQN',
-    'HybridDDPG',
     'HybridQlearning',
+    'HybridNSGA2'
 
     # Scheduling Algorithms
     'HybridHEFT',
