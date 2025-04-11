@@ -12,6 +12,7 @@ class HybridPSO(BaseGWO):
 
     def optimize(self):
         w, c1, c2 = 0.5, 1.5, 1.5  # Inertia, cognitive, social
+        self.convergence = []
 
         for _ in range(MAX_ITER):
             for i in range(POP_SIZE):
@@ -31,6 +32,17 @@ class HybridPSO(BaseGWO):
 
             best_idx = np.argmax(self.pbest_fitness)
             self.gbest = self.pbest[best_idx]
-            self.convergence.append(1 / self.pbest_fitness[best_idx])
+            self.convergence.append(1 / self.pbest_fitness[best_idx])  # Assuming lower fitness is better
 
         return self.gbest, self.convergence
+
+    def _compute_fitness(self, solution):
+        latency, energy = 0, 0
+        for task_idx, node_idx in enumerate(solution):
+            task = self.tasks[task_idx]
+            node = self.edge_nodes[node_idx]
+            proc_time = task['cpu'] / node['cpu_cap']
+            tx_time = (task['data'] / BANDWIDTH) * np.linalg.norm(node['loc'] - task['loc'])
+            latency += ALPHA * (proc_time + tx_time)
+            energy += GAMMA * node['energy_cost'] * task['cpu']
+        return latency + energy

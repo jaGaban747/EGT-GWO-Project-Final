@@ -1,6 +1,6 @@
-from config import ALPHA, BANDWIDTH, GAMMA, NUM_EDGE_NODES, NUM_TASKS, POP_SIZE
 import numpy as np
 from .base_gwo import BaseGWO
+from config import ALPHA, BANDWIDTH, GAMMA, NUM_EDGE_NODES, NUM_TASKS, POP_SIZE
 
 class HybridRDGWO(BaseGWO):
     def __init__(self, tasks, edge_nodes):
@@ -35,6 +35,10 @@ class HybridRDGWO(BaseGWO):
         for _ in range(10):  # Warm-up iterations
             self._update_strategies()
         for i in range(POP_SIZE):
-            self.population[i] = [np.random.choice(NUM_EDGE_NODES, p=self.strategy_probs[task_idx]) 
-                                  for task_idx in range(NUM_TASKS)]
+            self.population[i] = [np.random.choice(
+                NUM_EDGE_NODES, 
+                p=self.strategy_probs[task_idx]
+            ) for task_idx in range(NUM_TASKS)]
+        
+        # Run standard GWO optimization
         return super().optimize()

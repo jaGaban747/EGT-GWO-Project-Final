@@ -7,35 +7,36 @@ from .hybrid_brd_gwo import HybridBRDGWO
 # Metaheuristic Hybrids
 from .hybrid_pso import HybridPSO
 from .hybrid_ga import HybridGA
-
-# Reinforcement Learning-Based Hybrids
-#from .hybrid_ddqn import HybridDDQN
-#from .hybrid_ddpg import HybridDDPG
-from .hybrid_qlearning import HybridQlearning
-from .hybrid_nsga2 import HybridNSGA2
-
-# Scheduling Hybrids
-from .hybrid_heft import HybridHEFT
-from .hybrid_maxmin import HybridMaxMin
-from .hybrid_lyapunov import HybridLyapunov
+from .hybrid_woa import HybridWOA
+from .hybrid_hho import HybridHHO
+from .hybrid_ssa import HybridSSA
+from .hybrid_ao import HybridAO
+from .hybrid_rsa import HybridRSA
+from .hybrid_tsa import HybridTSA
+from .hybrid_gbo import HybridGBO
+from .hybrid_avo import HybridAVO
+from .hybrid_qana import HybridQANA
+from .hybrid_pso import HybridPSO
 
 __all__ = [
-    # Game Theory
+    # Game Theory (4)
     'HybridLDGWO',
     'HybridRDGWO',
     'HybridFPGWO',
     'HybridBRDGWO',
 
-    # Metaheuristics
+    # Metaheuristics (11)
     'HybridPSO',
     'HybridGA',
+    'HybridWOA',
+    'HybridHHO',
+    'HybridSSA',
+    'HybridAO',
+    'HybridRSA',
+    'HybridTSA',
+    'HybridGBO',
+    'HybridAVO',
+    'HybridQANA'
+    'HybridPSO',
 
-    # Reinforcement Learning
-    'HybridQlearning',
-    'HybridNSGA2'
-
-    # Scheduling Algorithms
-    'HybridHEFT',
-    'HybridMaxMin',
-    'HybridLyapunov',
 ]

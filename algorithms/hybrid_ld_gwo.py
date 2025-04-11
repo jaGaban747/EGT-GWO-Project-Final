@@ -1,6 +1,6 @@
 import numpy as np
-from config import ALPHA, BANDWIDTH, BETA, GAMMA, NUM_EDGE_NODES, NUM_TASKS, POP_SIZE
 from .base_gwo import BaseGWO
+from config import ALPHA, BANDWIDTH, BETA, GAMMA, NUM_EDGE_NODES, NUM_TASKS, POP_SIZE
 
 class HybridLDGWO(BaseGWO):
     def __init__(self, tasks, edge_nodes):
@@ -32,9 +32,13 @@ class HybridLDGWO(BaseGWO):
     
     def optimize(self):
         # Initialize population using Logit Dynamics
-        for _ in range(10):  # Warm-up iterations for strategy probabilities
+        for _ in range(10):  # Warm-up iterations
             self._update_strategies()
         for i in range(POP_SIZE):
-            self.population[i] = [np.random.choice(NUM_EDGE_NODES, p=self.strategy_probs[task_idx]) 
-                                  for task_idx in range(NUM_TASKS)]
+            self.population[i] = [np.random.choice(
+                NUM_EDGE_NODES, 
+                p=self.strategy_probs[task_idx]
+            ) for task_idx in range(NUM_TASKS)]
+        
+        # Run standard GWO optimization
         return super().optimize()

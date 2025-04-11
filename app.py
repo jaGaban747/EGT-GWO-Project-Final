@@ -23,11 +23,16 @@ from algorithms import (
     HybridRDGWO,
     HybridFPGWO,
     HybridBRDGWO,
-    HybridNSGA2,
-    HybridQlearning,
-    HybridHEFT,
-    HybridMaxMin,
-    HybridLyapunov
+    HybridPSO,
+    HybridWOA,
+    HybridHHO,
+    HybridSSA,
+    HybridAO,
+    HybridRSA,
+    HybridTSA,
+    HybridGBO,
+    HybridAVO,
+    HybridQANA
 )
 from utils.metrics import compute_metrics
 from config import *
@@ -72,34 +77,39 @@ def generate_data(seed):
 
 def run_algorithm(algo_class, tasks, edge_nodes):
     """
-    Run a specific algorithm and return its solution, convergence history,
-    computed metrics, and an indicator for whether it is a maximization method.
+    Modified to better handle different algorithm types' convergence data
     """
     try:
         algo = algo_class(tasks, edge_nodes)
-        solution, convergence = algo.optimize()
-        metrics = compute_metrics(solution, tasks, edge_nodes)
-        # Adjust the fitness metric based on latency and energy weights
-        metrics['fitness'] = ALPHA * metrics['latency'] + GAMMA * metrics['energy']
-        # List algorithms known to be using maximization (customize as needed)
-        maximizing_algos = ['HybridLDABC', 'HybridLDGA', 'MaxMin']
-        is_maximizing = algo_class.__name__ in maximizing_algos
+        result = algo.optimize()
         
-        # Handle the case where an algorithm doesn't provide convergence data
-        if convergence is None or (isinstance(convergence, (list, tuple)) and len(convergence) == 0):
-            # For algorithms like Lyapunov that might not have convergence data
-            convergence = []
-            
+        # Handle different return formats
+        if isinstance(result, tuple) and len(result) == 2:
+            solution, convergence = result
+        else:
+            solution = result
+            convergence = None
+        
+        metrics = compute_metrics(solution, tasks, edge_nodes)
+        metrics['fitness'] = ALPHA * metrics['latency'] + GAMMA * metrics['energy']
+        
+        # Standardize convergence data format
+        if convergence is not None:
+            if isinstance(convergence, (int, float)):  # Single value
+                convergence = [convergence]
+            elif not isinstance(convergence, (list, tuple, np.ndarray)):
+                convergence = None
+        
         return {
             'solution': solution,
             'metrics': metrics,
-            'convergence': convergence,
-            'is_maximizing': is_maximizing
+            'convergence': convergence if convergence else [],
+            'is_maximizing': algo_class.__name__ in maximizing_algos
         }
     except Exception as e:
         st.error(f"Error running {algo_class.__name__}: {str(e)}")
         return None
-
+    
 def normalize_metrics(results):
     """
     Normalize the collected metrics across all algorithms
@@ -356,19 +366,27 @@ st.sidebar.header("Settings")
 st.sidebar.subheader("Algorithms")
 algo_exp = st.sidebar.expander("Select Algorithms", expanded=True)
 algos = {
+    # Game Theory Hybrids
     'LD-GWO': algo_exp.checkbox('LD-GWO', value=True),
     'RD-GWO': algo_exp.checkbox('RD-GWO', value=True),
     'FP-GWO': algo_exp.checkbox('FP-GWO', value=True),
     'BRD-GWO': algo_exp.checkbox('BRD-GWO', value=True),
-    'NSGA2': algo_exp.checkbox('NSGA2', value=True),
-    'Qlearning': algo_exp.checkbox('Qlearning', value=True),
-    'HEFT': algo_exp.checkbox('HEFT', value=True),
-    'MaxMin': algo_exp.checkbox('MaxMin', value=True),
-    'Lyapunov': algo_exp.checkbox('Lyapunov', value=True)
+    
+    # Metaheuristic Hybrids
+    'WOA': algo_exp.checkbox('WOA', value=True),
+    'HHO': algo_exp.checkbox('HHO', value=True),
+    'SSA': algo_exp.checkbox('SSA', value=True),
+    'AO': algo_exp.checkbox('AO', value=True),
+    'RSA': algo_exp.checkbox('RSA', value=True),
+    'TSA': algo_exp.checkbox('TSA', value=True),
+    'GBO': algo_exp.checkbox('GBO', value=True),
+    'AVO': algo_exp.checkbox('AVO', value=True),
+    'QANA': algo_exp.checkbox('QANA', value=True),
+    'PSO': algo_exp.checkbox('PSO', value=True)
 }
 
-# Indicate which algorithms are maximization-based (customize as needed)
-maximizing_algos = ['MaxMin']
+# Indicate which algorithms are maximization-based
+maximizing_algos = []  # Update if any algorithms are maximization-based
 
 st.sidebar.subheader("Experiment Configuration")
 num_trials = st.sidebar.number_input("Number of Trials", min_value=1, max_value=50, value=30)
@@ -385,15 +403,23 @@ use_normalized = st.sidebar.checkbox("Use normalized metrics", value=True)
 
 # Map algorithm names to their classes
 algo_mapping = {
+    # Game Theory
     'LD-GWO': HybridLDGWO,
     'RD-GWO': HybridRDGWO,
     'FP-GWO': HybridFPGWO,
     'BRD-GWO': HybridBRDGWO,
-    'NSGA2': HybridNSGA2,
-    'Qlearning': HybridQlearning,
-    'HEFT': HybridHEFT,
-    'MaxMin': HybridMaxMin,
-    'Lyapunov': HybridLyapunov
+    
+    # Metaheuristics
+    'PSO': HybridPSO,
+    'WOA': HybridWOA,
+    'HHO': HybridHHO,
+    'SSA': HybridSSA,
+    'AO': HybridAO,
+    'RSA': HybridRSA,
+    'TSA': HybridTSA,
+    'GBO': HybridGBO,
+    'AVO': HybridAVO,
+    'QANA': HybridQANA
 }
 
 # -----------------------------------------------------------------------------
@@ -495,96 +521,72 @@ if st.session_state.all_results:
         if show_convergence and st.session_state.all_convergence:
             trial_options = ["Average"] + [f"Trial {i+1}" for i in range(num_trials)]
             selected_trial = st.selectbox("Select trial for convergence plot", trial_options)
-            convergence_type = st.radio(
-                "Convergence direction",
-                ["Minimization (lower is better)", "Maximization (higher is better)", "Show both"],
-                horizontal=True
+            
+            # Get all algorithms that have any convergence data
+            algos_with_convergence = [
+                algo for algo, conv_list in st.session_state.all_convergence.items()
+                if any(len(conv) > 0 for conv in conv_list if conv is not None)
+            ]
+            
+            if not algos_with_convergence:
+                st.warning("No algorithms with convergence data available")
+                st.stop()
+                
+            # Prepare convergence data
+            convergence_data = []
+            for algo in algos_with_convergence:
+                if selected_trial == "Average":
+                    # Calculate average convergence across trials
+                    valid_trials = [
+                        conv for conv in st.session_state.all_convergence[algo] 
+                        if conv is not None and len(conv) > 0
+                    ]
+                    if valid_trials:
+                        min_length = min(len(conv) for conv in valid_trials)
+                        avg_convergence = np.mean([
+                            conv[:min_length] for conv in valid_trials
+                        ], axis=0)
+                        convergence_data.append(avg_convergence)
+                else:
+                    trial_idx = int(selected_trial.split(" ")[1]) - 1
+                    conv = st.session_state.all_convergence[algo][trial_idx]
+                    if conv is not None and len(conv) > 0:
+                        convergence_data.append(conv)
+            
+            if not convergence_data:
+                st.warning(f"No convergence data available for {selected_trial}")
+                st.stop()
+                
+            # Create the plot
+            fig = go.Figure()
+            colors = get_color_palette(len(algos_with_convergence))
+            
+            for i, (algo, conv) in enumerate(zip(algos_with_convergence, convergence_data)):
+                fig.add_trace(go.Scatter(
+                    x=list(range(1, len(conv) + 1)),
+                    y=conv,
+                    name=algo,
+                    line=dict(color=colors[i], width=2),
+                    mode='lines',
+                    hovertemplate='Iteration: %{x}<br>Value: %{y:.4f}'
+                ))
+            
+            fig.update_layout(
+                title=f"Convergence Curves - {selected_trial}",
+                xaxis_title='Iteration',
+                yaxis_title='Fitness Value',
+                legend=dict(
+                    orientation="h",
+                    yanchor="bottom",
+                    y=-0.3,
+                    xanchor="center",
+                    x=0.5
+                ),
+                margin=dict(l=60, r=20, t=80, b=60),
+                height=500
             )
             
-            # Check which algorithms have valid convergence data
-            algos_with_convergence = []
-            missing_convergence = []
-            
-            for algo_name, convergence_list in st.session_state.all_convergence.items():
-                if convergence_list and any(isinstance(conv, (list, tuple, np.ndarray)) and len(conv) > 0 for conv in convergence_list):
-                    algos_with_convergence.append(algo_name)
-                else:
-                    missing_convergence.append(algo_name)
-            
-            if missing_convergence:
-                st.warning(f"The following algorithms don't have convergence data: {', '.join(missing_convergence)}")
-                
-            if algos_with_convergence:
-                # Process convergence data based on selection
-                min_algos = []
-                min_data = []
-                max_algos = []
-                max_data = []
-                
-                for algo_name in algos_with_convergence:
-                    convergence_list = st.session_state.all_convergence[algo_name]
-                    is_maximizing = algo_name in maximizing_algos
-                    
-                    # Skip algorithms that don't match the selected convergence type
-                    if convergence_type == "Minimization (lower is better)" and is_maximizing:
-                        continue
-                    if convergence_type == "Maximization (higher is better)" and not is_maximizing:
-                        continue
-                    
-                    if selected_trial == "Average":
-                        # Filter out empty convergence data
-                        valid_convergence = [conv for conv in convergence_list if isinstance(conv, (list, tuple, np.ndarray)) and len(conv) > 0]
-                        
-                        if valid_convergence:
-                            min_length = min(len(conv) for conv in valid_convergence)
-                            truncated = [conv[:min_length] for conv in valid_convergence]
-                            avg_convergence = np.mean(truncated, axis=0)
-                            
-                            if is_maximizing:
-                                max_algos.append(algo_name)
-                                max_data.append(avg_convergence)
-                            else:
-                                min_algos.append(algo_name)
-                                min_data.append(avg_convergence)
-                    else:
-                        trial_idx = int(selected_trial.split(" ")[1]) - 1
-                        if (trial_idx < len(convergence_list) and 
-                            isinstance(convergence_list[trial_idx], (list, tuple, np.ndarray)) and 
-                            len(convergence_list[trial_idx]) > 0):
-                            
-                            if is_maximizing:
-                                max_algos.append(algo_name)
-                                max_data.append(convergence_list[trial_idx])
-                            else:
-                                min_algos.append(algo_name)
-                                min_data.append(convergence_list[trial_idx])
-                
-                # Create and display plots
-                if convergence_type in ["Minimization (lower is better)", "Show both"] and min_algos:
-                    min_fig = create_plotly_convergence(
-                        min_data, 
-                        min_algos, 
-                        False, 
-                        f"Convergence Curves (Minimization) - {selected_trial}",
-                        single_plot=(convergence_type != "Show both")
-                    )
-                    st.plotly_chart(min_fig, use_container_width=True)
-                
-                if convergence_type in ["Maximization (higher is better)", "Show both"] and max_algos:
-                    max_fig = create_plotly_convergence(
-                        max_data, 
-                        max_algos, 
-                        True, 
-                        f"Convergence Curves (Maximization) - {selected_trial}",
-                        single_plot=(convergence_type != "Show both")
-                    )
-                    st.plotly_chart(max_fig, use_container_width=True)
-                    
-                if ((convergence_type in ["Minimization (lower is better)"] and not min_algos) or
-                    (convergence_type in ["Maximization (higher is better)"] and not max_algos)):
-                    st.warning(f"No algorithms with {convergence_type.split(' ')[0].lower()} convergence data to display.")
-            else:
-                st.error("No algorithms with valid convergence data to display.")
+            st.plotly_chart(fig, use_container_width=True)
     
     # --- Tab 3: Detailed Metrics ---
     with tab3:
