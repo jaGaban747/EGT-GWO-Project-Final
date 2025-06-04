@@ -14,7 +14,7 @@ class ReplicatorDynamicsGame:
         - gamma: Weight parameter for energy utility
         """
         self.tasks = tasks
-        self.edge_nodes = edge_nodes
+        self.edge_nodes = edge_nodes 
         self.alpha = alpha
         self.gamma = gamma
         self.strategy_probs = np.full((NUM_TASKS, NUM_EDGE_NODES), 1 / NUM_EDGE_NODES)
@@ -131,35 +131,35 @@ class HybridRDGWO(BaseGWO):
                 self.population[i] = np.random.randint(0, NUM_EDGE_NODES, NUM_TASKS)
 
     def _compute_fitness(self, solution):
-        """Compute combined fitness with RD strategy penalty."""
-        base_fitness = super()._compute_base_fitness(solution)
+            """Compute stable, normalized fitness with RD strategy penalty."""
+            
+            # Step 1: Compute and normalize base fitness
+            base_fitness = super()._compute_base_fitness(solution)
+            normalized_fitness = np.log1p(base_fitness)  # log(1 + base_fitness)
+
+            # Step 2: Compute strategy penalty from RD game probabilities
+            strategy_penalty = 0
+            for task_idx, node_idx in enumerate(solution):
+                chosen_prob = self.rd_game.strategy_probs[task_idx, node_idx]
+                strategy_penalty += min(20, -np.log(chosen_prob + 1e-6))  # Cap to prevent explosion
+
+            # Step 3: Track response time (optional, used elsewhere)
+            response_time = 0
+            for task_idx, node_idx in enumerate(solution):
+                task = self.tasks[task_idx]
+                node = self.edge_nodes[node_idx]
+                proc_time = task['cpu'] / node['cpu_cap']
+                tx_time = (task['data'] / BANDWIDTH) * np.linalg.norm(node['loc'] - task['loc'])
+                response_time += proc_time + tx_time
+            self.response_time_history.append(response_time / NUM_TASKS)
+
+            # Step 4: Combine fitness and penalty using weighted sum
+            penalty_weight = 0.1
+            fitness = normalized_fitness + penalty_weight * strategy_penalty
+
+            return fitness
+
         
-        # NORMALIZATION: Scale the fitness to be in the same range as other algorithms
-        # Option 1: Simple scaling factor
-        normalized_fitness = base_fitness / (NUM_TASKS * 0.01)
-        
-        # Option 2: Logarithmic scaling (alternative approach)
-        # normalized_fitness = np.log(1 + base_fitness)
-        
-        # RD strategy alignment penalty
-        strategy_penalty = 0
-        for task_idx, node_idx in enumerate(solution):
-            chosen_prob = self.rd_game.strategy_probs[task_idx, node_idx]
-            strategy_penalty += -np.log(chosen_prob + 1e-10)
-        
-        # Track response time for comparison
-        response_time = 0
-        for task_idx, node_idx in enumerate(solution):
-            task = self.tasks[task_idx]
-            node = self.edge_nodes[node_idx]
-            proc_time = task['cpu'] / node['cpu_cap']
-            tx_time = (task['data'] / BANDWIDTH) * np.linalg.norm(node['loc'] - task['loc'])
-            response_time += proc_time + tx_time
-        
-        self.response_time_history.append(response_time / NUM_TASKS)
-        
-        # Return normalized fitness with penalty
-        return normalized_fitness / (1 + 0.2 * strategy_penalty / NUM_TASKS)
 
     def optimize(self):
         """Run the hybrid RD-GWO optimization."""

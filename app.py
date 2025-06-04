@@ -57,21 +57,23 @@ def get_color_palette(num_colors):
     return [f"rgba({int(255*colormap(i)[0])}, {int(255*colormap(i)[1])}, {int(255*colormap(i)[2])}, 0.7)" 
             for i in np.linspace(0, 0.9, num_colors)]
 
+
+
+
 @st.cache_data
 def generate_data(seed):
-    """Generate task and edge node data with a specified seed."""
     np.random.seed(seed)
     tasks = [{
         'cpu': np.random.randint(*TASK_CPU_RANGE),
-        'deadline': np.random.randint(*TASK_DEADLINE_RANGE),
+        'deadline': np.random.uniform(TASK_DEADLINE_MIN, TASK_DEADLINE_MAX),
         'data': np.random.randint(*TASK_DATA_RANGE),
-        'loc': np.random.rand(2) * 100,
+        'loc': np.random.rand(2) * 100 * DISTANCE_SCALE_FACTOR,  # Scale distances
         'mission_critical': (i < NUM_TASKS * MISSION_CRITICAL_RATIO)
     } for i in range(NUM_TASKS)]
 
     edge_nodes = [{
-        'cpu_cap': np.random.randint(*EDGE_CPU_CAP_RANGE),
-        'loc': np.random.rand(2) * 100,
+        'cpu_cap': np.random.randint(*EDGE_CPU_CAP_RANGE),  # Updated range
+        'loc': np.random.rand(2) * 100 * DISTANCE_SCALE_FACTOR,  # Scale distances
         'energy_cost': np.random.uniform(*EDGE_ENERGY_COST_RANGE)
     } for _ in range(NUM_EDGE_NODES)]
 
@@ -197,37 +199,36 @@ def create_better_boxplot(df, x_column, y_column, title, normalize=False):
         y=y_column, 
         color=x_column,
         color_discrete_sequence=get_color_palette(len(df[x_column].unique())),
-        title=title,
-        points="outliers"  # Only show outlier points
+        title=title, 
+        points="outliers"
     )
     
     fig.update_layout(
         xaxis_title="",
         yaxis_title=y_column,
         legend_title_text='',
-        font=dict(size=12),
-        title={
-            'text': title,
-            'y': 0.95,
-            'x': 0.5,
-            'xanchor': 'center',
-            'yanchor': 'top'
-        },
+        font=dict(family="Helvetica", size=24),  # Axes/labels
+        title=dict(
+            text=title,
+            y=0.95,
+            x=0.5,
+            xanchor='center',
+            yanchor='top',
+            font=dict(family="Helvetica", size=18)
+        ),
         margin=dict(l=50, r=20, t=80, b=50),
-        height=500
+        height=600,
+        xaxis=dict(tickfont=dict(family="Helvetica", size=16), tickangle=45),
+        yaxis=dict(tickfont=dict(family="Helvetica", size=16))
     )
     
-    # Rotate x-axis labels for better readability
-    fig.update_xaxes(tickangle=45)
-    
-    # Add a note about normalization if applicable
     if normalize:
         fig.add_annotation(
             x=0.5, y=1.05,
             xref="paper", yref="paper",
             text="Normalized values (higher is better)",
             showarrow=False,
-            font=dict(size=10, color="gray")
+            font=dict(family="Helvetica", size=14, color="gray")
         )
     
     return fig
@@ -267,15 +268,6 @@ def create_better_bar_chart(data, x_values, y_values, title, normalize=False):
     # Configure text display
     fig.update_traces(textposition='outside')
     
-    # Add a note about normalization if applicable
-    if normalize:
-        fig.add_annotation(
-            x=0.5, y=1.05,
-            xref="paper", yref="paper",
-            text="Normalized values (higher is better)",
-            showarrow=False,
-            font=dict(size=10, color="gray")
-        )
     
     return fig
 
@@ -334,40 +326,50 @@ for key in ['all_results', 'normalized_results', 'all_convergence', 'algorithm_t
 # Updated default metrics list to include all the new metrics
 if 'selected_metrics' not in st.session_state:
     st.session_state.selected_metrics = [
-        'fitness', 'throughput', 'latency', 'energy', 'overhead', 'fairness',
+        'fitness', 'throughput', 'taskLevel-fairness',
         'response_time', 'offloading_ratio', 'qos_differentiation', 
-        'resource_utilization', 'resource_fairness'
+        'resource_utilization',
     ]
 
 # Define which metrics are minimization metrics (lower is better)
-minimization_metrics = ['latency', 'energy', 'overhead', 'response_time']
+minimization_metrics = [ 'overhead', 'response_time']
 # Define which metrics are maximization metrics (higher is better)
 maximization_metrics = [
-    'throughput', 'fairness', 'offloading_ratio', 'qos_differentiation', 
-    'resource_utilization', 'resource_fairness'
+    'throughput', 'taskLevel-fairness', 'offloading_ratio', 'qos_differentiation', 
+    'resource_utilization', 
 ]
 
 # Set custom page style
 st.markdown("""
     <style>
-    .main .block-container {
-        padding-top: 2rem;
+    /* General text styling */
+    .stApp {
+        font-family: 'Arial', sans-serif;
     }
-    h1, h2, h3 {
-        color: #1E3A8A;
+    
+    /* Chart titles */
+    .stPlotlyChart .plotly .gtitle {
+        font-size: 18px !important;
+        font-weight: bold !important;
+        color: #2c3e50 !important;
     }
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 8px;
+    
+    /* Axis labels */
+    .stPlotlyChart .plotly .xtitle, 
+    .stPlotlyChart .plotly .ytitle {
+        font-size: 14px !important;
+        font-weight: bold !important;
     }
-    .stTabs [data-baseweb="tab"] {
-        background-color: #f0f2f6;
-        border-radius: 4px 4px 0px 0px;
-        padding: 10px 16px;
-        font-weight: 500;
+    
+    /* Legend text */
+    .stPlotlyChart .plotly .legendtext {
+        font-size: 12px !important;
     }
-    .stTabs [aria-selected="true"] {
-        background-color: #1E3A8A !important;
-        color: white !important;
+    
+    /* Data labels */
+    .stPlotlyChart .plotly .trace text {
+        font-size: 10px !important;
+        font-weight: bold !important;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -415,9 +417,9 @@ num_trials = st.sidebar.number_input("Number of Trials", min_value=1, max_value=
 
 # Updated metrics selection with all metrics
 all_metrics = [
-    'fitness', 'throughput', 'latency', 'energy', 'fairness',
-    'response_time', 'offloading_ratio', 'qos_differentiation', 
-    'resource_utilization', 'resource_fairness'
+    'fitness',  'latency', 'energy', 
+    'response_time',  'qos_differentiation',
+    'resource_utilization', 'energy_aware_completion_efficiency'
 ]
 
 # Metrics selection with description tooltips
@@ -426,16 +428,13 @@ selected_metrics = []
 
 # Dictionary with descriptions for each metric
 metric_descriptions = {
-    'fitness': "Overall optimization objective (weighted sum of metrics)",
-    'throughput': "Number of tasks processed per unit time",
-    'latency': "Average delay in task completion",
-    'energy': "Energy consumption per task",
-    'fairness': "Equitable distribution of resources among tasks",
-    'response_time': "Time to first response for each task",
-    'offloading_ratio': "Proportion of tasks offloaded to edge nodes",
-    'qos_differentiation': "Differentiated service quality for mission-critical tasks",
-    'resource_utilization': "Efficiency of resource usage across edge nodes",
-    'resource_fairness': "Balanced loading across available edge nodes"
+    'fitness': "Weighted sum of latency and energy",
+    'latency': "Average task latency",
+    'energy': "Average energy consumption per task",
+    'response_time': "Average response time per task",
+    'qos_differentiation': "Latency difference between mission-critical and normal tasks",
+    'resource_utilization': "Average CPU utilization across nodes",
+    'energy_aware_completion_efficiency': "Tasks completed per unit energy",
 }
 
 # Add checkboxes with tooltips for each metric
@@ -482,6 +481,14 @@ algo_mapping = {
     'DO': HybridDO,
     'GTO': HybridGTO
 }
+
+
+
+
+
+
+
+
 
 # -----------------------------------------------------------------------------
 # Run Experiments
@@ -825,6 +832,8 @@ if st.session_state.all_results:
         else:
             st.warning(f"Please select exactly {num_metrics_needed} metrics for the {scatter_dimension} scatter plot")
     
+
+
     # --- Tab 2: Convergence Analysis ---
     with tab2:
         st.header("Convergence Analysis")
@@ -937,7 +946,10 @@ if st.session_state.all_results:
                         
                         iterations_to_converge[algo] = convergence_iter if convergence_iter else len(conv)
                 
-                    
+
+
+
+
     # --- Tab 3: Detailed Metrics ---
     with tab3:
         st.header("Detailed Performance Metrics")
@@ -1438,6 +1450,8 @@ if st.session_state.all_results:
             else:
                 st.warning("No valid comparison results available.")
                 
+
+
 
     # --- Tab 5: Metric Correlations ---
     with tab5:

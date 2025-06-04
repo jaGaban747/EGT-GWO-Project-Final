@@ -122,35 +122,23 @@ class HybridBRDGWO(BaseGWO):
                 self.population[i] = np.random.randint(0, NUM_EDGE_NODES, NUM_TASKS)
 
     def _compute_fitness(self, solution):
-        """Compute combined fitness with BRD strategy penalty."""
+        """Compute stable, normalized fitness with BRD strategy penalty."""
+        # Step 1: Get base fitness from superclass and normalize
         base_fitness = super()._compute_base_fitness(solution)
-        
-        # NORMALIZATION: Scale the fitness to be in the same range as other algorithms
-        # Option 1: Simple scaling factor
-        normalized_fitness = base_fitness / (NUM_TASKS * 0.01)
-        
-        # Option 2: Logarithmic scaling (alternative approach)
-        # normalized_fitness = np.log(1 + base_fitness)
-        
-        # BRD strategy alignment penalty
+        normalized_fitness = np.log1p(base_fitness)  # log(1 + base_fitness) for scale stability
+
+        # Step 2: Compute strategy penalty from BRD probabilities
         strategy_penalty = 0
         for task_idx, node_idx in enumerate(solution):
             chosen_prob = self.br_game.strategy_probs[task_idx, node_idx]
-            strategy_penalty += -np.log(chosen_prob + 1e-10)
-        
-        # Track response time for comparison
-        response_time = 0
-        for task_idx, node_idx in enumerate(solution):
-            task = self.tasks[task_idx]
-            node = self.edge_nodes[node_idx]
-            proc_time = task['cpu'] / node['cpu_cap']
-            tx_time = (task['data'] / BANDWIDTH) * np.linalg.norm(node['loc'] - task['loc'])
-            response_time += proc_time + tx_time
-        
-        self.response_time_history.append(response_time / NUM_TASKS)
-        
-        # Return normalized fitness with penalty
-        return normalized_fitness / (1 + 0.2 * strategy_penalty / NUM_TASKS)
+            strategy_penalty += min(20, -np.log(chosen_prob + 1e-6))  # Avoid log(0) and cap penalty
+
+        # Step 3: Combine normalized fitness and strategy penalty
+        penalty_weight = 0.1  # Adjustable weight for how much penalty affects the fitness
+        fitness = normalized_fitness + penalty_weight * strategy_penalty
+
+        return fitness
+
 
     def optimize(self):
         """Run the hybrid BRD-GWO optimization."""

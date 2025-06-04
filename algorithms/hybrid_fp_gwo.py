@@ -136,23 +136,19 @@ class HybridFPGWO(BaseGWO):
                 self.population[i] = np.random.randint(0, NUM_EDGE_NODES, NUM_TASKS)
 
     def _compute_fitness(self, solution):
-        """Compute combined fitness with FP strategy penalty."""
+        """Compute stable, normalized fitness with FP strategy penalty."""
+        
+        # Step 1: Compute and normalize base fitness
         base_fitness = super()._compute_base_fitness(solution)
+        normalized_fitness = np.log1p(base_fitness)  # log(1 + base_fitness) for stability
         
-        # NORMALIZATION: Scale the fitness to be in the same range as other algorithms
-        # Option 1: Simple scaling factor
-        normalized_fitness = base_fitness / (NUM_TASKS * 0.01)
-        
-        # Option 2: Logarithmic scaling (alternative approach)
-        # normalized_fitness = np.log(1 + base_fitness)
-        
-        # FP strategy alignment penalty
+        # Step 2: Compute penalty based on FP beliefs
         strategy_penalty = 0
         for task_idx, node_idx in enumerate(solution):
             chosen_prob = self.fp_game.beliefs[task_idx, node_idx]
-            strategy_penalty += -np.log(chosen_prob + 1e-10)
-        
-        # Track response time for comparison
+            strategy_penalty += min(20, -np.log(chosen_prob + 1e-6))  # Cap extreme penalties
+
+        # Step 3: Optionally track response time (used elsewhere)
         response_time = 0
         for task_idx, node_idx in enumerate(solution):
             task = self.tasks[task_idx]
@@ -160,11 +156,13 @@ class HybridFPGWO(BaseGWO):
             proc_time = task['cpu'] / node['cpu_cap']
             tx_time = (task['data'] / BANDWIDTH) * np.linalg.norm(node['loc'] - task['loc'])
             response_time += proc_time + tx_time
-        
         self.response_time_history.append(response_time / NUM_TASKS)
-        
-        # Return normalized fitness with penalty
-        return normalized_fitness / (1 + 0.2 * strategy_penalty / NUM_TASKS)
+
+        # Step 4: Combine fitness and penalty
+        penalty_weight = 0.1  # You can adjust this
+        fitness = normalized_fitness + penalty_weight * strategy_penalty
+
+        return fitness
 
     def optimize(self):
         """Run the hybrid FP-GWO optimization."""

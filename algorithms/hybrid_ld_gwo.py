@@ -70,24 +70,24 @@ class HybridLDGWO(BaseGWO):
         return new_probs
 
     def _compute_fitness(self, solution):
-        # Get base fitness from parent class but with normalization
+        """Compute stable, normalized fitness with game-theoretic strategy penalty."""
+    
+        # Step 1: Compute and normalize base fitness
         base_fitness = super()._compute_base_fitness(solution)
-        
-        # Add game theory penalty based on deviation from Nash equilibrium
+        normalized_fitness = np.log1p(base_fitness)  # log(1 + base_fitness) for safer scaling
+
+        # Step 2: Compute strategy penalty (deviation from equilibrium)
         strategy_penalty = 0
         for task_idx, node_idx in enumerate(solution):
             chosen_prob = self.strategy_probs[task_idx, node_idx]
-            strategy_penalty += -np.log(chosen_prob + 1e-10)  # Avoid log(0)
-        
-        # Normalize fitness to a more reasonable scale
-        # Option 1: Scaling factor based on number of tasks
-        normalized_fitness = base_fitness / (NUM_TASKS * 0.01)
-        
-        # Option 2: Use logarithmic scaling
-        # normalized_fitness = np.log(1 + base_fitness)
-        
-        # Return combined fitness with a normalized scale
-        return normalized_fitness / (1 + 0.2 * strategy_penalty / NUM_TASKS)
+            strategy_penalty += min(20, -np.log(chosen_prob + 1e-6))  # Cap to avoid extreme penalty
+
+        # Step 3: Combine with weight (no division for stability)
+        penalty_weight = 0.1  # Tunable value
+        fitness = normalized_fitness + penalty_weight * strategy_penalty
+
+        return fitness
+
 
     def optimize(self):
         # Initialize population using game theory
