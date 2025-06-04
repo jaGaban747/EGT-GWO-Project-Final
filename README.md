@@ -14,7 +14,6 @@ This combination improves resource utilization, energy efficiency, and overall n
 EGT-GWO-Project-Final/
 │── algorithms/          # Contains the algorithms to be compared
 │── data/                # Datasets for testing and evaluation
-│── results/             # Generated output and logs
 │── main.py              # Main script to run the optimization
 │── app.py               # Streamlit app for visualizing comparisons
 │── README.md            # Documentation
